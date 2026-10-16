@@ -1,0 +1,1 @@
+document.getElementById('nicegui-frame').src = `https://example.com/`

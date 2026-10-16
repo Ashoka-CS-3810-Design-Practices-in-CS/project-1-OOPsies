@@ -5,11 +5,18 @@
   "description": "Making your to-do list finally DoAble",
   "icons": {
     "16": "images/icon-16.png",
+    "32": "images/icon-32.png",
     "48": "images/icon-48.png",
     "128": "images/icon-128.png"
   },
+  "background": {
+  "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Open DoAble"
+  },
   "side_panel": {
-    "default_path": "sidepanel.html"
+    "default_path": "sidepanel/sidepanel.html"
   },
   "permissions": ["sidePanel"]
 }

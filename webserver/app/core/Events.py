@@ -7,9 +7,10 @@ class Event:
     title:str
     start:datetime 
     end:datetime
-    pre_buffer:timedelta 
-    post_buffer:timedelta
+    pre_buffer:timedelta|None
+    post_buffer:timedelta|None
 
+    @property
     def interval(self) -> tuple[datetime,datetime]:
         return (self.start + self.pre_buffer, self.end+self.post_buffer)
 
@@ -50,15 +51,15 @@ class Routine(FixedEvent):
 
 @dataclass(kw_only=True)
 class PointEvent(FixedEvent):
-    pre_buffer = timedelta()
-    post_buffer = timedelta()
+    pre_buffer:timedelta|None = None
+    post_buffer:timedelta|None = None
 
+    @property
     def datepoint(self):
         if self.start == self.end:
             return self.start
         else:
             raise ValueError("Start and end of point events cannot differ.")
- 
     
 @dataclass(kw_only=True)
 class Appointment(PointEvent):

@@ -18,5 +18,5 @@
   "side_panel": {
     "default_path": "sidepanel/sidepanel.html"
   },
-  "permissions": ["sidePanel"]
+  "permissions": ["sidePanel", "tabs"]
 }

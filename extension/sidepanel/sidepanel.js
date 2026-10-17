@@ -7,7 +7,8 @@ async function sync() {
   btn.disabled = !tab?.url?.startsWith('https://ams.ashoka.edu.in/Contents/TimeTable/TimeTableView_Student.aspx')
 }
 
+sync()
+
 chrome.tabs.onActivated.addListener(sync)
 chrome.tabs.onUpdated.addListener(sync)
 
-sync()

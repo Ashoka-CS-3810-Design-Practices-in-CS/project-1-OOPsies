@@ -12,6 +12,12 @@
   "background": {
   "service_worker": "service-worker.js"
   },
+  "content_scripts": [
+   {
+     "matches": ["https://ams.ashoka.edu.in/Contents/TimeTable/TimeTableView_Student.aspx"],
+     "js": ["content-script.js"]
+   }
+ ],
   "action": {
     "default_title": "Open DoAble"
   },

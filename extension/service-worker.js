@@ -4,7 +4,6 @@ browser.sidePanel
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'import-events') {
-    console.log('hello')
     fetch('http://127.0.0.1:5000/api/import', {
         method: 'POST',
         headers: {
@@ -17,7 +16,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log(message.payload)
         console.error('Error:', error)
         sendResponse({ success: false, error: error.message })
+        return true
       })
-    }
+    } 
   }
 )

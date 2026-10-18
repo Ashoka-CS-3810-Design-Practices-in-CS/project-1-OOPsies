@@ -15,7 +15,7 @@ function importTimetable(){
         const ttCells = row.querySelectorAll('td:not(:first-child)')
         // remaining elements are timetable cells
 
-        ttRow = []
+        const ttRow = []
         ttCells.forEach(cell => {
             const courseDiv = cell.querySelector('div.LsCol, div.DsCol') 
             // div class for LS and DS

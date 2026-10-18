@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import IntEnum
 
@@ -7,8 +7,8 @@ class Event:
     title:str
     start:datetime 
     end:datetime
-    pre_buffer:timedelta|None
-    post_buffer:timedelta|None
+    pre_buffer:timedelta = timedelta(0)
+    post_buffer:timedelta = timedelta(0)
 
     @property
     def interval(self) -> tuple[datetime,datetime]:
@@ -51,9 +51,10 @@ class Routine(FixedEvent):
 
 @dataclass(kw_only=True)
 class PointEvent(FixedEvent):
-    pre_buffer:timedelta|None = None
-    post_buffer:timedelta|None = None
 
+    pre_buffer:  timedelta = field(default=timedelta(0), init=False)
+    post_buffer: timedelta = field(default=timedelta(0), init=False)
+    
     @property
     def datepoint(self):
         if self.start == self.end:

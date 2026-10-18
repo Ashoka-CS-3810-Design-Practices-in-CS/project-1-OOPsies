@@ -45,10 +45,10 @@ const targetNode = document.body
 // Options for the observer (which mutations to observe)
 const config = { attributes: true, childList: true, subtree: true }
 // Callback function to execute when mutations are observed
-const callback = (mutationList, observer) => {
-  const ttData = importTimetable()
+const callback = async (mutationList, observer) => {
+    const ttData = importTimetable()
     if (ttData === null) return 
-    console.log(ttData)
+    await browser.storage.local.set({ AshokaTimetable: ttData })
     observer.disconnect()
 }
 
@@ -57,9 +57,3 @@ const observer = new MutationObserver(callback)
 
 // Start observing the target node for configured mutations
 observer.observe(targetNode, config)
-
-const initial = importTimetable()
-if (initial !== null) {
-    console.log(initial)
-    observer.disconnect()
-}

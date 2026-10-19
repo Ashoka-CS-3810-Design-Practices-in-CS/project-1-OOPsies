@@ -49,7 +49,6 @@ const callback = async (mutationList, observer) => {
     const ttData = importTimetable()
     if (ttData === null) return 
     await browser.storage.local.set({ AshokaTimetable: ttData })
-    observer.disconnect()
 }
 
 // Create an observer instance linked to the callback function

@@ -5,7 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi>=0.143.3",
+    "intervaltree>=3.2.1",
     "nicegui>=3.18.0",
-    "pyintervaltree>=0.5",
     "sphinx>=9.1.0",
 ]

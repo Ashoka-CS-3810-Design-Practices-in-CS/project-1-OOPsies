@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from intervaltree import Interval
 from enum import IntEnum
+from uuid import uuid4
 
 @dataclass(kw_only=True)
 class Event:
@@ -10,6 +11,9 @@ class Event:
     end:datetime
     pre_buffer:timedelta = timedelta(0)
     post_buffer:timedelta = timedelta(0)
+
+    uid: str = field(default_factory=lambda: uuid4().hex)   # this occurrence
+    series_uid: str | None = None
 
     @property
     def true_start(self) -> datetime:
@@ -24,6 +28,8 @@ class Event:
         return self.true_end - self.true_start
 
     def __post_init__(self):
+        if self.series_uid is None:
+            self.series_uid = self.uid
         if self.start > self.end:
             raise ValueError("Event cannot end before it begins!")
 
@@ -71,6 +77,7 @@ class PointEvent(FixedEvent):
     post_buffer: timedelta = field(default=timedelta(0), init=False)
     
     def __post_init__(self):
+        super().__post_init__()
         if self.start != self.end:
             raise ValueError("Point event is defined by start date!")
     

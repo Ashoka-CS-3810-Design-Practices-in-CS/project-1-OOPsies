@@ -1,12 +1,11 @@
 from intervaltree import Interval, IntervalTree
-from redblacktree import RedBlackTree
 from bisect import bisect_right
 from collections import deque
 from events import *
 # this library manages to do the majority of the tasks we needed from our custom 
 # imagination of the data structure.
 
-class FixedEventIntervalTree:
+class FixedTree:
     def __init__(self):
         self.tree = IntervalTree()
 
@@ -28,8 +27,8 @@ class FixedEventIntervalTree:
         self.insert(event)
         
 
-class TimeIntervalTree:
-    def __init__(self, window:Interval, event_tree:FixedEventIntervalTree):
+class WindowTree:
+    def __init__(self, window:Interval, event_tree:FixedTree):
         self.tree = IntervalTree([window])
         self.event_dict = dict[str,Interval]()
         self.unscheduled = dict[str, FlexibleEvent]()
@@ -54,27 +53,27 @@ class TimeIntervalTree:
     def insert_helper(self, event:FlexibleEvent):
         slot = self.subset_search(event)
         if slot is not None:
-            slot.data[event.title] = event
+            slot.data[event.uid] = event
 
             schedule_data, leftovers = max_scheduling(list(slot.data.values()))
 
             slot.data.clear()
             slot.data.update(schedule_data)
 
-            if event.title in slot.data:
-                self.event_dict[event.title] = slot
-                self.unscheduled.pop(event.title, None)
+            if event.uid in slot.data:
+                self.event_dict[event.uid] = slot
+                self.unscheduled.pop(event.uid, None)
 
             if len(leftovers) > 0:
                 for leftover in leftovers:
                     leftover.seen.add(slot)
-                    self.event_dict.pop(leftover.title, None)
-                    self.unscheduled[leftover.title] = leftover 
+                    self.event_dict.pop(leftover.uid, None)
+                    self.unscheduled[leftover.uid] = leftover 
                 self.cascade(leftovers)
         else:
-            self.unscheduled[event.title] = event
+            self.unscheduled[event.uid] = event
 
-    def validate(self, event:FlexibleEvent, event_tree:FixedEventIntervalTree):
+    def validate(self, event:FlexibleEvent, event_tree:FixedTree):
         if not (self.window.begin <= event.true_start and self.window.end >= event.true_end):
             raise ValueError("Event bounds cannot exceed the scheduling window!")
 
@@ -83,7 +82,7 @@ class TimeIntervalTree:
             raise ValueError(f"Conflict with fixed event: {conflict.title}")
                 
                 
-    def insert(self, event:FlexibleEvent, event_tree:FixedEventIntervalTree):
+    def insert(self, event:FlexibleEvent, event_tree:FixedTree):
         self.validate(event, event_tree)
         event.seen.clear() 
         self.insert_helper(event)
@@ -100,37 +99,37 @@ class TimeIntervalTree:
                 event.seen.add(slot)
 
                 trial = dict(slot.data)
-                trial[event.title] = event
+                trial[event.uid] = event
                 new_schedule, new_leftovers = max_scheduling(list(trial.values()))
 
-                if event.title not in new_schedule:
+                if event.uid not in new_schedule:
                     continue
 
                 slot.data.clear()
                 slot.data.update(new_schedule)
-                self.event_dict[event.title] = slot
-                self.unscheduled.pop(event.title, None) 
+                self.event_dict[event.uid] = slot
+                self.unscheduled.pop(event.uid, None) 
 
                 for leftover in new_leftovers:
                     leftover.seen.add(slot)
-                    self.event_dict.pop(leftover.title, None)
-                    self.unscheduled[leftover.title] = leftover
+                    self.event_dict.pop(leftover.uid, None)
+                    self.unscheduled[leftover.uid] = leftover
                     queue.append(leftover)
                     
                 break
 
             else:
-                self.unscheduled[event.title] = event
+                self.unscheduled[event.uid] = event
 
     def delete_helper(self, event: FlexibleEvent):
-        if event.title in self.unscheduled:
-            return self.unscheduled.pop(event.title), []
+        if event.uid in self.unscheduled:
+            return self.unscheduled.pop(event.uid), []
 
-        slot = self.event_dict.pop(event.title, None)
+        slot = self.event_dict.pop(event.uid, None)
         if slot is None:
             raise KeyError(f"Could not find event!")
 
-        removed = slot.data.pop(event.title)
+        removed = slot.data.pop(event.uid)
 
         retry = [leftover for leftover in self.unscheduled.values() if slot in leftover.seen]
         for leftover in retry:
@@ -144,7 +143,7 @@ class TimeIntervalTree:
             self.cascade(retry)
         return removed
 
-    def edit(self, event: FlexibleEvent, event_tree: FixedEventIntervalTree):
+    def edit(self, event: FlexibleEvent, event_tree: FixedTree):
         self.validate(event, event_tree)
         removed, retry = self.delete_helper(event)
         event.seen.clear()
@@ -200,7 +199,7 @@ def max_scheduling_recursive(i:int, v:list[FlexibleEvent|int], w:list[PriorityMa
     if i == 0:
         schedule_data = dict[str,FlexibleEvent]()
         for event in schedule:
-            schedule_data[event.title] = event
+            schedule_data[event.uid] = event
         return schedule_data, set(chosen)
     
     elif w[i] + M[p[i]] >= M[i - 1]:
@@ -218,6 +217,5 @@ def max_scheduling(data:list[FlexibleEvent]):
     schedule, chosen = max_scheduling_recursive(n, v, w, p, M, deque(), deque()) # O(n)
 
     leftovers = [v[i] for i in range(1, n+1) if i not in chosen]
-
-
+    
     return schedule, leftovers

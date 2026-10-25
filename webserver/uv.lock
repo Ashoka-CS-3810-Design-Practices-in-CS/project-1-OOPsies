@@ -1242,15 +1242,6 @@ wheels = [
 ]
 
 [[package]]
-name = "rbtree-py"
-version = "0.1.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/09/c9/182679635d2edb37b7d2465b3a22bc0297c4872e42864782338db2e49a1a/rbtree_py-0.1.4.tar.gz", hash = "sha256:4879e3b49b063e3aed0f57958c801154952789ea7342d436f39538a62641b36b", size = 12980, upload-time = "2025-04-15T16:18:53.341Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/2b/5f42e18426730fd4c5b5132658e51d49443b3a1a76e10a85dd409f2f37db/rbtree_py-0.1.4-py3-none-any.whl", hash = "sha256:6f678f7d4d9059f7538e5be5a9bbd7da7c412660598be1de77d2c64d1e4b7a6c", size = 10229, upload-time = "2025-04-15T16:18:51.296Z" },
-]
-
-[[package]]
 name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1554,17 +1545,17 @@ name = "webserver"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "fastapi" },
     { name = "intervaltree" },
     { name = "nicegui" },
-    { name = "rbtree-py" },
     { name = "sphinx" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.143.3" },
     { name = "intervaltree", specifier = ">=3.2.1" },
     { name = "nicegui", specifier = ">=3.18.0" },
-    { name = "rbtree-py", specifier = ">=0.1.4" },
     { name = "sphinx", specifier = ">=9.1.0" },
 ]
 

@@ -7,5 +7,6 @@ requires-python = ">=3.13"
 dependencies = [
     "intervaltree>=3.2.1",
     "nicegui>=3.18.0",
+    "rbtree-py>=0.1.4",
     "sphinx>=9.1.0",
 ]

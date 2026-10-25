@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from intervaltree import Interval
 from enum import IntEnum
 
 @dataclass(kw_only=True)
@@ -11,8 +12,16 @@ class Event:
     post_buffer:timedelta = timedelta(0)
 
     @property
-    def interval(self) -> tuple[datetime,datetime]:
-        return (self.start + self.pre_buffer, self.end+self.post_buffer)
+    def true_start(self) -> datetime:
+        return self.start - self.pre_buffer
+
+    @property
+    def true_end(self) -> datetime:
+        return self.end + self.post_buffer
+
+    @property
+    def length(self) -> timedelta:
+        return self.true_end - self.true_start
 
     def __post_init__(self):
         if self.start > self.end:
@@ -20,24 +29,30 @@ class Event:
 
 @dataclass(kw_only=True)
 class FixedEvent(Event):
-    flexible:bool = False
+    flexible:bool = field(default=False, init=False)
 
 class PriorityMatrix(IntEnum):
-    UI = 4
-    UNI = 3
-    NUI = 2
-    NUNI = 1
+    URGENT_IMPORTANT = 4
+    URGENT_NOT_IMPORTANT = 3
+    NOT_URGENT_IMPORTANT = 2
+    NOT_URGENT_NOT_IMPORTANT = 1
 
 @dataclass(kw_only=True)
 class FlexibleEvent(Event):
     priority:PriorityMatrix
-    flexible:bool = True
+    flexible: bool = field(default=True, init=False)
+    seen: set[Interval] = field(default_factory=set(), init=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.length <= timedelta(0):
+            raise ValueError("Flexible event cannot have non-positive length!")
     
 @dataclass(kw_only=True)
 class Meeting(FixedEvent):
     attendees:tuple[str, ...]
     recurring:bool
-    venue:str|None
+    venue:str|None = None
 
 @dataclass(kw_only=True)
 class Lecture(FixedEvent):
@@ -55,12 +70,9 @@ class PointEvent(FixedEvent):
     pre_buffer:  timedelta = field(default=timedelta(0), init=False)
     post_buffer: timedelta = field(default=timedelta(0), init=False)
     
-    @property
-    def datepoint(self):
-        if self.start == self.end:
-            return self.start
-        else:
-            raise ValueError("Start and end of point events cannot differ.")
+    def __post_init__(self):
+        if self.start != self.end:
+            raise ValueError("Point event is defined by start date!")
     
 @dataclass(kw_only=True)
 class Appointment(PointEvent):

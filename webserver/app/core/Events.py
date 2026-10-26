@@ -11,8 +11,9 @@ class Event:
     end:datetime
     pre_buffer:timedelta = timedelta(0)
     post_buffer:timedelta = timedelta(0)
+    flexible:bool
 
-    uid: str = field(default_factory=lambda: uuid4().hex)   # this occurrence
+    uid: str = field(default_factory=lambda: uuid4().hex, init=False)
     series_uid: str | None = None
 
     @property
@@ -47,7 +48,7 @@ class PriorityMatrix(IntEnum):
 class FlexibleEvent(Event):
     priority:PriorityMatrix
     flexible: bool = field(default=True, init=False)
-    seen: set[Interval] = field(default_factory=set(), init=False)
+    seen: set[Interval] = field(default_factory=set, init=False)
 
     def __post_init__(self):
         super().__post_init__()

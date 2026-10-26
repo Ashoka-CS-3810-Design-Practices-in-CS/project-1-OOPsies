@@ -13,7 +13,7 @@ class Event:
     post_buffer:timedelta = timedelta(0)
     flexible:bool
 
-    uid: str = field(default_factory=lambda: uuid4().hex)   # this occurrence
+    uid: str = field(default_factory=lambda: uuid4().hex, init=False)
     series_uid: str | None = None
 
     @property

@@ -8,9 +8,11 @@ from events import *
 class FixedTree:
     def __init__(self):
         self.tree = IntervalTree()
+        self.change_count = 0
 
     def insert(self, event:FixedEvent):
         self.tree.addi(event.true_start, event.true_end, event)
+        self.change_count += 1
 
     def conflict_search(self, event:Event):
         found = list(self.tree.overlap(event.true_start, event.true_end))
@@ -21,21 +23,25 @@ class FixedTree:
 
     def delete(self, event:FixedEvent):
         self.tree.removei(event.true_start, event.true_end, event)
+        self.change_count += 1
 
-    def edit(self, event:FixedEvent):
-        self.delete(event)
-        self.insert(event)
+    def edit(self, old_event:FixedEvent, new_event:FixedEvent):
+        self.delete(old_event)
+        self.insert(new_event)
         
 
 class WindowTree:
     def __init__(self, window:Interval, event_tree:FixedTree):
-        self.tree = IntervalTree([window])
+        self.tree = IntervalTree([Interval(window.begin, window.end, {})])
         self.event_dict = dict[str,Interval]()
         self.unscheduled = dict[str, FlexibleEvent]()
         self.window = window
+        self.fixed = dict[str, FixedEvent]()
+        self.synced_version = event_tree.change_count
 
         fixed_intervals = event_tree.tree.overlap(window.begin, window.end)
         for interval in fixed_intervals:
+            self.fixed[interval.data.uid] = interval.data
             self.tree.chop(interval.begin, interval.end, lambda *_ : dict[str,FlexibleEvent]())
 
     def subset_search(self, event:Event)->Interval|None:
@@ -151,6 +157,88 @@ class WindowTree:
         if retry:
             self.cascade(retry)
         return removed
+
+    def forget(self, slot: Interval):
+        for s in self.tree:
+            for e in s.data.values():
+                e.seen.discard(slot)
+        for e in self.unscheduled.values():
+            e.seen.discard(slot)
+
+    def split(self, fixed_event:FixedEvent):
+        start, end = fixed_event.true_start, fixed_event.true_end
+        orphans = list[FlexibleEvent]()
+
+        for slot in list(self.tree.overlap(start, end)):
+            left_end = max(slot.begin, start)
+            right_start = min(slot.end, end)
+
+            left  = Interval(slot.begin, left_end, {}) if left_end > slot.begin else None
+            right = Interval(right_start, slot.end,{}) if right_start < slot.end else None
+
+            for uid, e in slot.data.items():
+                if left is not None and left.begin <= e.true_start and e.true_end <= left.end:
+                    left.data[uid] = e;  self.event_dict[uid] = left
+                elif right is not None and right.begin <= e.true_start and e.true_end <= right.end:
+                    right.data[uid] = e; self.event_dict[uid] = right
+                else:
+                    orphans.append(e)
+                    self.event_dict.pop(uid, None)
+                    self.unscheduled[uid] = e
+
+            self.forget(slot)
+            self.tree.remove(slot)
+            if left  is not None: self.tree.add(left)
+            if right is not None: self.tree.add(right)
+
+        if orphans:
+            self.cascade(orphans)
+
+    def merge(self, fixed_event:FixedEvent):
+        if fixed_event.true_start == fixed_event.true_end:
+            return
+
+        start = max(fixed_event.true_start, self.window.begin)
+        end = min(fixed_event.true_end, self.window.end)
+        if start >= end:
+            return
+
+        left = next((s for s in self.tree if s.end == start), None)
+        right = next((s for s in self.tree if s.begin == end), None)
+
+        merged_slot = Interval(left.begin if left is not None else start,
+                          right.end if right is not None else end, {})
+        
+        for slot in (left, right):
+            if slot is None: continue
+            self.forget(slot)
+            self.tree.remove(slot)
+            for uid, e in slot.data.items():
+                merged_slot.data[uid] = e
+                self.event_dict[uid] = merged_slot
+        self.tree.add(merged_slot)
+
+        retry = [e for e in self.unscheduled.values()
+                 if merged_slot.begin <= e.true_start and e.true_end <= merged_slot.end]
+        
+        self.cascade(retry)
+
+    def sync(self, event_tree: FixedTree):
+            if self.synced_version == event_tree.change_count:
+                return
+    
+            current = {iv.data.uid: iv.data 
+                       for iv in event_tree.tree.overlap(self.window.begin, self.window.end)}
+    
+            for uid, ev in self.fixed.items():
+                if uid not in current:
+                    self.merge(ev)
+            for uid, ev in current.items():
+                if uid not in self.fixed:
+                    self.split(ev)
+    
+            self.fixed = current
+            self.synced_version = event_tree.change_count
 
 # based on Kleinberg, Jon; Tardos, Eva (2006). Algorithm Design (1st ed.). Pearson. p. 254 
 # and wikipedia: https://en.wikipedia.org/wiki/Interval_scheduling#Weighted

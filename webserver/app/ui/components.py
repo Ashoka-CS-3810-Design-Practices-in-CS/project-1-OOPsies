@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta
 from dataclasses import fields, MISSING
 from core.events import *
+from core.dsa import *
 from nicegui import ui
+
+PX_PER_HOUR = 60  # 1 minute ≈ 1px
 
 CATEGORIES = {
     'Meeting': Meeting,
@@ -143,7 +146,85 @@ class EventUI:
             wrapper.on('mouseleave', show_base)
 
 
-class SchedulingWindow: pass
+class SchedulingWindow:
+    def __init__(self, window: Interval, event_tree: FixedTree):
+        self.window = window
+        self.event_tree = event_tree
+        self.tree = WindowTree(window, event_tree)
+        self._scroll = None
+        self._container = None
+
+    def display(self):
+        self._scroll = ui.scroll_area().classes(
+            'w-96 h-[600px] border rounded-2xl bg-slate-50')
+        with self._scroll:
+            self._container = ui.element('div').classes('relative w-full overflow-hidden')
+            self.refresh()
+        self._scroll_to_now()
+
+    def refresh(self):
+        """Call after mutating self.tree / self.event_tree."""
+        if self._container is None:
+            return
+        span_h = (self.window.end - self.window.begin).total_seconds() / 3600
+        self._container.style(f'height:{span_h * PX_PER_HOUR}px')
+        self._container.clear()
+        with self._container:
+            self._draw()
+
+    # ----------------------------------------------------------------- helpers
+    def _y(self, dt: datetime) -> float:
+        return (dt - self.window.begin).total_seconds() / 3600 * PX_PER_HOUR
+
+    def _scroll_to_now(self):
+        now = datetime.now()
+        if self.window.begin <= now <= self.window.end:
+            span = (self.window.end - self.window.begin).total_seconds()
+            p = (now - self.window.begin).total_seconds() / span
+            self._scroll.scroll_to(percent_y=p, duration=0.0)
+
+    # ----------------------------------------------------------------- drawing
+    def _draw(self):
+        # hourly grid
+        h = self.window.begin.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        while h <= self.window.end:
+            y = self._y(h)
+            with ui.element('div').classes(
+                    'absolute left-0 right-0 flex items-center gap-2 px-2 pointer-events-none') \
+                    .style(f'top:{y}px; transform:translateY(-50%)'):
+                ui.element('div').classes('flex-1 h-px bg-gray-300')
+                ui.label(h.strftime('%H:%M')).classes('text-[10px] text-gray-400 tabular-nums')
+            h += timedelta(hours=1)
+
+        # current timestamp
+        now = datetime.now()
+        if self.window.begin <= now <= self.window.end:
+            y = self._y(now)
+            with ui.element('div').classes(
+                    'absolute left-0 right-0 flex items-center px-1 pointer-events-none z-10') \
+                    .style(f'top:{y}px; transform:translateY(-50%)'):
+                ui.element('div').classes('w-3 h-3 rounded-full bg-pink-400 shrink-0')
+                ui.element('div').classes('flex-1 h-0.5 bg-pink-400')
+
+        # fixed events
+        for iv in self.event_tree.tree.overlap(self.window.begin, self.window.end):
+            self._event(iv.data, iv.data.start, iv.data.end, EVENT_COLORS['fixed'])
+
+        # flexible events — already guaranteed non-overlapping by max_scheduling
+        for slot in self.tree.tree:
+            for e in (slot.data or {}).values():
+                self._event(e, e.start, e.end, EVENT_COLORS['flexible'])
+
+    def _event(self, event, begin: datetime, end: datetime, color: str):
+        top = self._y(begin)
+        height = max(self._y(end) - top, 18)
+        with ui.element('div').classes(
+                'absolute left-2 right-14 rounded-lg px-2 py-0.5 text-white overflow-hidden z-5') \
+                .style(f'top:{top}px; height:{height}px; background:{color}'):
+            ui.label(event.title).classes('text-[11px] font-semibold leading-tight truncate')
+            if height >= 34:
+                ui.label(f'{begin:%H:%M}–{end:%H:%M}').classes(
+                    'text-[10px] opacity-80 leading-tight')
 
 class WindowSelector: pass
 

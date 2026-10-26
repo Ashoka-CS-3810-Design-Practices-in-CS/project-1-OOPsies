@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta
 from dataclasses import fields, MISSING
-from core.events import *
-from core.dsa import *
+from app.core.events import *
+from app.core.dsa import *
 from nicegui import ui
 
-PX_PER_HOUR = 60  # 1 minute ≈ 1px
+PX_PERhour = 60
 
 CATEGORIES = {
     'Meeting': Meeting,
@@ -147,84 +147,62 @@ class EventUI:
 
 
 class SchedulingWindow:
-    def __init__(self, window: Interval, event_tree: FixedTree):
-        self.window = window
-        self.event_tree = event_tree
-        self.tree = WindowTree(window, event_tree)
-        self._scroll = None
-        self._container = None
+    def __init__(self, window_tree: WindowTree):
+        self.window_tree = window_tree
 
-    def display(self):
-        self._scroll = ui.scroll_area().classes(
-            'w-96 h-[600px] border rounded-2xl bg-slate-50')
-        with self._scroll:
-            self._container = ui.element('div').classes('relative w-full overflow-hidden')
-            self.refresh()
-        self._scroll_to_now()
+    def render(self):
+        w = self.window_tree
+        height = int((w.window.end - w.window.begin) / timedelta(minutes=1))
 
-    def refresh(self):
-        """Call after mutating self.tree / self.event_tree."""
-        if self._container is None:
-            return
-        span_h = (self.window.end - self.window.begin).total_seconds() / 3600
-        self._container.style(f'height:{span_h * PX_PER_HOUR}px')
-        self._container.clear()
-        with self._container:
-            self._draw()
+        with ui.scroll_area().classes('w-96 h-[600px]'):
+            with ui.element('div').classes('relative w-full').style(f'height:{height}px'):
+                self.hour_markers()
+                for ev in w.fixed.values():
+                    self.event_box(ev, EVENT_COLORS['fixed'])
+                for uid, slot in w.event_dict.items():
+                    self.event_box(slot.data[uid], EVENT_COLORS['flexible'])
+                now_container = ui.element('div').classes('absolute inset-0 pointer-events-none')
 
-    # ----------------------------------------------------------------- helpers
-    def _y(self, dt: datetime) -> float:
-        return (dt - self.window.begin).total_seconds() / 3600 * PX_PER_HOUR
+        self.render_now(now_container)
+        ui.timer(60, lambda: self.render_now(now_container))
 
-    def _scroll_to_now(self):
-        now = datetime.now()
-        if self.window.begin <= now <= self.window.end:
-            span = (self.window.end - self.window.begin).total_seconds()
-            p = (now - self.window.begin).total_seconds() / span
-            self._scroll.scroll_to(percent_y=p, duration=0.0)
+    def y(self, t: datetime) -> int:
+        return int((t - self.window_tree.window.begin) / timedelta(minutes=1))
 
-    # ----------------------------------------------------------------- drawing
-    def _draw(self):
-        # hourly grid
-        h = self.window.begin.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        while h <= self.window.end:
-            y = self._y(h)
-            with ui.element('div').classes(
-                    'absolute left-0 right-0 flex items-center gap-2 px-2 pointer-events-none') \
-                    .style(f'top:{y}px; transform:translateY(-50%)'):
-                ui.element('div').classes('flex-1 h-px bg-gray-300')
-                ui.label(h.strftime('%H:%M')).classes('text-[10px] text-gray-400 tabular-nums')
-            h += timedelta(hours=1)
+    def hour_markers(self):
+        w = self.window_tree.window
+        cur = w.begin.replace(minute=0, second=0, microsecond=0)
+        if cur < w.begin:
+            cur += timedelta(hours=1)
+        while cur <= w.end:
+            with ui.element('div').classes('absolute right-2 flex items-center gap-2').style(
+                f'top:{self.y(cur)}px; transform:translateY(-50%)'
+            ):
+                ui.element('div').classes('w-4 h-0.5 bg-gray-300 rounded')
+                ui.label(f'{cur:%H:%M}').classes('text-xs text-gray-400 tabular-nums')
+            cur += timedelta(hours=1)
 
-        # current timestamp
-        now = datetime.now()
-        if self.window.begin <= now <= self.window.end:
-            y = self._y(now)
-            with ui.element('div').classes(
-                    'absolute left-0 right-0 flex items-center px-1 pointer-events-none z-10') \
-                    .style(f'top:{y}px; transform:translateY(-50%)'):
-                ui.element('div').classes('w-3 h-3 rounded-full bg-pink-400 shrink-0')
-                ui.element('div').classes('flex-1 h-0.5 bg-pink-400')
-
-        # fixed events
-        for iv in self.event_tree.tree.overlap(self.window.begin, self.window.end):
-            self._event(iv.data, iv.data.start, iv.data.end, EVENT_COLORS['fixed'])
-
-        # flexible events — already guaranteed non-overlapping by max_scheduling
-        for slot in self.tree.tree:
-            for e in (slot.data or {}).values():
-                self._event(e, e.start, e.end, EVENT_COLORS['flexible'])
-
-    def _event(self, event, begin: datetime, end: datetime, color: str):
-        top = self._y(begin)
-        height = max(self._y(end) - top, 18)
+    def event_box(self, ev: Event, color: str):
+        top = self.y(ev.true_start)
+        height = max(self.y(ev.true_end) - top, 16)
         with ui.element('div').classes(
-                'absolute left-2 right-14 rounded-lg px-2 py-0.5 text-white overflow-hidden z-5') \
-                .style(f'top:{top}px; height:{height}px; background:{color}'):
-            ui.label(event.title).classes('text-[11px] font-semibold leading-tight truncate')
-            if height >= 34:
-                ui.label(f'{begin:%H:%M}–{end:%H:%M}').classes(
-                    'text-[10px] opacity-80 leading-tight')
+            'absolute left-2 right-20 rounded-lg px-2 py-1 text-white overflow-hidden shadow-sm'
+        ).style(f'top:{top}px; height:{height}px; background:{color}'):
+            ui.label(ev.title).classes('text-xs font-bold truncate leading-tight')
+            ui.label(f'{ev.start:%H:%M} – {ev.end:%H:%M}').classes('text-[10px] opacity-80')
+
+    def render_now(self, container):
+        container.clear()
+        w = self.window_tree.window
+        now = datetime.now()
+        if not (w.begin <= now <= w.end):
+            return
+        with container:
+            with ui.element('div').classes('absolute left-0 right-20 flex items-center').style(
+                f'top:{self.y(now)}px; transform:translateY(-50%)'
+            ):
+                ui.element('div').classes('w-2.5 h-2.5 rounded-full bg-pink-400')
+                ui.element('div').classes('flex-1 h-0.5 bg-pink-400')
 
 class WindowSelector: pass
 

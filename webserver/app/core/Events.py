@@ -48,7 +48,7 @@ class PriorityMatrix(IntEnum):
 class FlexibleEvent(Event):
     priority:PriorityMatrix
     flexible: bool = field(default=True, init=False)
-    seen: set[Interval] = field(default_factory=set(), init=False)
+    seen: set[Interval] = field(default_factory=set, init=False)
 
     def __post_init__(self):
         super().__post_init__()

@@ -1,7 +1,7 @@
 from intervaltree import Interval, IntervalTree
 from bisect import bisect_right
 from collections import deque
-from events import *
+from app.core.events import *
 # this library manages to do the majority of the tasks we needed from our custom 
 # imagination of the data structure.
 
@@ -99,7 +99,7 @@ class WindowTree:
         while queue:
             event = queue.popleft()
             unseen = all_slots - event.seen
-            candidates = {slot for slot in unseen if slot.length >= event.length}
+            candidates = {slot for slot in unseen if slot.length() >= event.length}
 
             for slot in candidates:
                 event.seen.add(slot)

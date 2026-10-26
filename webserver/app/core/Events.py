@@ -11,6 +11,7 @@ class Event:
     end:datetime
     pre_buffer:timedelta = timedelta(0)
     post_buffer:timedelta = timedelta(0)
+    flexible:bool
 
     uid: str = field(default_factory=lambda: uuid4().hex)   # this occurrence
     series_uid: str | None = None

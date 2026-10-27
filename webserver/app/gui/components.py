@@ -45,29 +45,29 @@ class EventUI:
 
     def base_render(self):
         color = self.get_color()
-        with ui.card().classes('w-full rounded-2xl shadow-none p-4').style(f'background-color: {color}'):
-            ui.label(self.event.title).classes('text-xl font-bold text-white')
+        with ui.card().classes('w-full rounded-lg shadow-none p-4').style(f'background-color: {color}'):
+            ui.label(self.event.title).classes('text-base font-bold text-white')
 
     def hover_render(self):
         color = self.get_color()
         
         with ui.column().classes('w-full gap-2 font-sans'):
-
-            # pre_buffer
+            # pre_buffer (only if > 0)
             pre_min = int(self.event.pre_buffer / timedelta(minutes=1))
-            with ui.row().classes('w-full rounded-2xl py-2 justify-center items-center').style(f'background-color: {color}90'):
-                ui.label(f'{pre_min} min').classes('text-sm text-white')
+            if pre_min > 0:
+                with ui.row().classes('w-full rounded-lg py-1 justify-center items-center').style(f'background-color: {color}'):
+                    ui.label(f'{pre_min} min').classes('text-xs text-white')
 
-            # event card
-            with ui.card().classes('w-full rounded-2xl shadow-none p-4').style(f'background-color: {color}'):
+            # Main event card (Colored Box)
+            with ui.element('div').classes('w-full rounded-lg shadow-none flex flex-col').style(f'background-color: {color}; padding: 16px;'):
                 
-                with ui.row().classes('w-full justify-between items-start'):
-                    ui.label(self.event.title).classes('text-xl font-bold text-white')
-                    ui.icon('edit_rounded').classes('text-2xl text-white cursor-pointer hover:text-gray-200').on('click', self.on_edit)
+                # Title
+                ui.label(self.event.title).classes('text-base font-bold text-white break-words leading-tight w-full')
                 
-                with ui.column().classes('gap-1 text-sm text-white w-full'):
-                    start_str = self.event.start.strftime('%H:%M')
-                    end_str = self.event.end.strftime('%H:%M')
+                # Details
+                with ui.column().classes('gap-1 text-xs text-white w-full mt-2'):
+                    start_str = self.event.start.strftime('%I:%M %p')
+                    end_str = self.event.end.strftime('%I:%M %p')
                     
                     current_cat = self.event.__class__.__name__
                     if current_cat in {"Event", "FixedEvent", "FlexibleEvent", "PointEvent"}:
@@ -75,19 +75,16 @@ class EventUI:
                     
                     properties = self.show_properties(current_cat)
 
-                    ui.label(f'{start_str} to {end_str}').classes('ml-1 mt-2 mb-1')
+                    ui.label(f'{start_str} to {end_str}').classes('ml-1 mt-1')
                     ui.label(f'{current_cat}').classes('w-full mt-2 text-white font-bold')
                     for name, data in properties.items():
                         ui.label(f'{data["label"]}: {data["value"]}').classes('w-full')
 
-                with ui.row().classes('w-full justify-end mt-2'):
-                    ui.icon('delete_rounded').classes('text-2xl text-white cursor-pointer hover:text-red-200').on('click', self.on_delete)
-
-            # post-buffer
+            # post-buffer (only if > 0)
             post_min = int(self.event.post_buffer / timedelta(minutes=1))
-            with ui.row().classes('w-full rounded-2xl py-2 justify-center items-center').style(f'background-color: {color}90'):
-                ui.label(f'{post_min} min').classes('text-sm text-white')
-
+            if post_min > 0:
+                with ui.row().classes('w-full rounded-lg py-1 justify-center items-center').style(f'background-color: {color}'):
+                    ui.label(f'{post_min} min').classes('text-xs text-white')
     
     def show_properties(self, category_name: str) -> dict:
         cls = CATEGORIES.get(category_name)
@@ -120,30 +117,54 @@ class EventUI:
             
         return properties
 
-    def on_edit(self):
-        ui.notify(f'Editing {self.event.title}')
+    def display(self, top: int = None, height: int = None):
+        """Render the event as an absolutely-positioned block inside a SchedulingWindow."""
+        color = self.get_color()
 
-    def on_delete(self):
-        ui.notify(f'Deleting {self.event.title}')
+        wrapper = ui.element('div').classes(
+            'absolute left-2 right-32 rounded-lg z-10 transition-all duration-300 ease-in-out shadow-sm grid'
+        ).style(f'top:{top}px; min-height:{height}px; max-height:{height}px; background:{color}; border: 1px solid transparent; overflow: hidden;')
+        
+        with wrapper:
+            # COMPACT VIEW (Fades out on hover)
+            compact = ui.element('div').classes(
+                'col-start-1 row-start-1 w-full px-2 py-1 transition-opacity duration-300 ease-in-out opacity-100 z-10'
+            )
+            with compact:
+                ui.label(self.event.title).classes('text-xs font-bold truncate leading-tight text-white')
+                ui.label(f'{self.event.start:%I:%M %p} – {self.event.end:%I:%M %p}').classes('text-[10px] text-white opacity-80')
 
-    def display(self):
-        with ui.element('div').classes('w-80') as wrapper:
-            container = ui.element('div').classes('w-full')
+            # EXPANDED VIEW (Fades in on hover)
+            hover_container = ui.element('div').classes(
+                'col-start-1 row-start-1 w-full p-2 transition-opacity duration-300 ease-in-out opacity-0 pointer-events-none z-20'
+            )
+            with hover_container:
+                self.hover_render()
+
+        def show_hover():
+            # 1. Expand max-height, change bg to white, add border/shadow
+            # 2. Remove z-10, add z-50 to ensure it paints OVER the next event
+            wrapper.classes(remove='z-10')
+            wrapper.classes(add='z-50 shadow-2xl')
+            wrapper.style(f'top:{top}px; min-height:{height}px; max-height: 800px; background: #ffffff; border: 1px solid #d1d5db; overflow: visible;')
             
-            def show_base():
-                container.clear()
-                with container:
-                    self.base_render()
+            # Cross-fade contents
+            compact.classes(remove='opacity-100').classes(add='opacity-0')
+            hover_container.classes(remove='opacity-0 pointer-events-none').classes(add='opacity-100 pointer-events-auto')
 
-            def show_hover():
-                container.clear()
-                with container:
-                    self.hover_render()
+        def show_compact():
+            # 1. Restore max-height, original color, remove border/shadow
+            # 2. Remove z-50, restore z-10
+            wrapper.classes(remove='z-50 shadow-2xl')
+            wrapper.classes(add='z-10')
+            wrapper.style(f'top:{top}px; min-height:{height}px; max-height:{height}px; background: {color}; border: 1px solid transparent; overflow: hidden;')
+            
+            # Cross-fade back
+            compact.classes(remove='opacity-0').classes(add='opacity-100')
+            hover_container.classes(remove='opacity-100 pointer-events-auto').classes(add='opacity-0 pointer-events-none')
 
-            show_base()
-
-            wrapper.on('mouseenter', show_hover)
-            wrapper.on('mouseleave', show_base)
+        wrapper.on('mouseenter', show_hover)
+        wrapper.on('mouseleave', show_compact)
 
 
 class SchedulingWindow:
@@ -154,14 +175,16 @@ class SchedulingWindow:
         w = self.window_tree
         height = int((w.window.end - w.window.begin) / timedelta(minutes=1))
 
-        with ui.scroll_area().classes('w-96 h-[600px]'):
-            with ui.element('div').classes('relative w-full').style(f'height:{height}px'):
-                self.hour_markers()
-                for ev in w.fixed.values():
-                    self.event_box(ev, EVENT_COLORS['fixed'])
-                for uid, slot in w.event_dict.items():
-                    self.event_box(slot.data[uid], EVENT_COLORS['flexible'])
-                now_container = ui.element('div').classes('absolute inset-0 pointer-events-none')
+        # Outer bounding box with medium black outline and round corners
+        with ui.element('div').classes('w-96 h-[620px] border-2 border-gray-800 rounded-2xl overflow-hidden p-2 bg-white shadow-xl'):
+            with ui.scroll_area().classes('w-full h-full'):
+                with ui.element('div').classes('relative w-full pr-1').style(f'height:{height}px'):
+                    self.hour_markers()
+                    for ev in w.fixed.values():
+                        self.event_box(ev)
+                    for uid, slot in w.event_dict.items():
+                        self.event_box(slot.data[uid])
+                    now_container = ui.element('div').classes('absolute inset-0 pointer-events-none z-20')
 
         self.render_now(now_container)
         ui.timer(60, lambda: self.render_now(now_container))
@@ -174,22 +197,31 @@ class SchedulingWindow:
         cur = w.begin.replace(minute=0, second=0, microsecond=0)
         if cur < w.begin:
             cur += timedelta(hours=1)
-        while cur <= w.end:
-            with ui.element('div').classes('absolute right-2 flex items-center gap-2').style(
-                f'top:{self.y(cur)}px; transform:translateY(-50%)'
-            ):
-                ui.element('div').classes('w-4 h-0.5 bg-gray-300 rounded')
-                ui.label(f'{cur:%H:%M}').classes('text-xs text-gray-400 tabular-nums')
+
+        while cur < w.end:
+            self.render_marker(cur)
             cur += timedelta(hours=1)
 
-    def event_box(self, ev: Event, color: str):
+        # Draw the next day's midnight (12:00 AM) at the very end
+        next_midnight = w.begin.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        if next_midnight <= w.end + timedelta(minutes=1):
+            self.render_marker(next_midnight)
+
+    def render_marker(self, t: datetime):
+        with ui.element('div').classes('absolute left-2 right-2 flex items-center gap-2 z-0').style(
+            f'top:{self.y(t)}px; transform:translateY(-50%)'
+        ):
+            ui.element('div').classes('flex-1 border-t-2 border-dashed border-gray-300')
+            
+            with ui.column().classes('gap-0 text-right w-20 shrink-0'):
+                ui.label(t.strftime('%Y/%m/%d')).classes('text-[10px] text-gray-400 tabular-nums leading-tight')
+                ui.label(t.strftime('%I:%M %p')).classes('text-xs text-gray-500 tabular-nums leading-tight font-semibold')
+
+    def event_box(self, ev: Event):
         top = self.y(ev.true_start)
         height = max(self.y(ev.true_end) - top, 16)
-        with ui.element('div').classes(
-            'absolute left-2 right-20 rounded-lg px-2 py-1 text-white overflow-hidden shadow-sm'
-        ).style(f'top:{top}px; height:{height}px; background:{color}'):
-            ui.label(ev.title).classes('text-xs font-bold truncate leading-tight')
-            ui.label(f'{ev.start:%H:%M} – {ev.end:%H:%M}').classes('text-[10px] opacity-80')
+        height = max(height - 2, 12)
+        EventUI(ev).display(top=top, height=height)
 
     def render_now(self, container):
         container.clear()
@@ -198,34 +230,22 @@ class SchedulingWindow:
         if not (w.begin <= now <= w.end):
             return
         with container:
-            with ui.element('div').classes('absolute left-0 right-20 flex items-center').style(
+            with ui.element('div').classes('absolute left-0 right-32 flex items-center z-20').style(
                 f'top:{self.y(now)}px; transform:translateY(-50%)'
             ):
                 ui.element('div').classes('w-2.5 h-2.5 rounded-full bg-pink-400')
                 ui.element('div').classes('flex-1 h-0.5 bg-pink-400')
 
 class WindowSelector: pass
-
 class Widget: pass
-
 class PriorityChoice: pass
-
 class ActionButton: pass
-
 class Calendar(Widget): pass
-
 class Editor(Widget): pass
-
 class Feedback(Widget): pass
-
 class DateSelector(WindowSelector): pass
-
 class DayTimeSelector(WindowSelector): pass
-
 class Add(ActionButton): pass
-
 class Edit(ActionButton): pass
-
 class Delete(ActionButton): pass
-
 class Undo(ActionButton): pass

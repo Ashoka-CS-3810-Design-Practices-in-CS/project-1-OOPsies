@@ -26,4 +26,4 @@ jobs:
 
     - name: Execute Pytest Suite (T1-T12)
       run: |
-        pytest tests/ -v
+        PYTHONPATH=webserver pytest tests/ -v

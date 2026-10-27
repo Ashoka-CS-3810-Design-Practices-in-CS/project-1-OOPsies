@@ -61,7 +61,7 @@ class WindowTree:
         if slot is not None:
             slot.data[event.uid] = event
 
-            schedule_data, leftovers = max_scheduling(list(slot.data.values()))
+            schedule_data, leftovers = max_scheduling_for_slot(list(slot.data.values()), slot)
 
             slot.data.clear()
             slot.data.update(schedule_data)
@@ -106,9 +106,11 @@ class WindowTree:
 
                 trial = dict(slot.data)
                 trial[event.uid] = event
-                new_schedule, new_leftovers = max_scheduling(list(trial.values()))
+                snapshot = {ev.uid: (ev.start, ev.end) for ev in slot.data.values()}
+                new_schedule, new_leftovers = max_scheduling_for_slot(list(trial.values()), slot)
 
                 if event.uid not in new_schedule:
+                    for ev in slot.data.values(): ev.start, ev.end = snapshot[ev.uid]
                     continue
 
                 slot.data.clear()
@@ -239,6 +241,23 @@ class WindowTree:
     
             self.fixed = current
             self.synced_version = event_tree.change_count
+
+def brick_lay(members:list[FlexibleEvent], slot:Interval):
+    cursor = slot.begin
+    placed = []
+    for e in sorted(members, key=lambda e: (-e.length, e.uid)):
+        if cursor + e.length > slot.end:
+            cursor = slot.begin
+        placed.append((e, cursor))
+        cursor += e.length
+    return placed
+
+def max_scheduling_for_slot(members:list[FlexibleEvent], slot:Interval):
+    for ev, cs in brick_lay(members, slot):
+        temp = ev.length
+        ev.start = cs + ev.pre_buffer
+        ev.end = cs + temp - ev.post_buffer
+    return max_scheduling(members)
 
 # based on Kleinberg, Jon; Tardos, Eva (2006). Algorithm Design (1st ed.). Pearson. p. 254 
 # and wikipedia: https://en.wikipedia.org/wiki/Interval_scheduling#Weighted

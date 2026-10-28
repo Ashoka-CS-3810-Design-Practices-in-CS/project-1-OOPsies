@@ -68,14 +68,22 @@ class Lecture(FixedEvent):
     venue:str|None = None
 
 @dataclass(kw_only=True)
-class Routine(FixedEvent):
-    recurring:bool = True
-
-@dataclass(kw_only=True)
 class PointEvent(FixedEvent):
 
     pre_buffer:  timedelta = field(default=timedelta(0), init=False)
     post_buffer: timedelta = field(default=timedelta(0), init=False)
+
+    @property
+    def true_start(self) -> datetime:
+        return self.start
+
+    @property
+    def true_end(self) -> datetime:
+        return self.end + timedelta(microseconds=1)
+
+    @property
+    def length(self) -> timedelta:
+        return self.true_end - self.true_start
     
     def __post_init__(self):
         super().__post_init__()
@@ -98,3 +106,7 @@ class Deadline(PointEvent):
 class Task(FlexibleEvent):
     missed:bool = False
     micro_tasks:tuple[str, ...]|None = None
+
+@dataclass(kw_only=True)
+class Routine(FlexibleEvent):
+    recurring:bool = True

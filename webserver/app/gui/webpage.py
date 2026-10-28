@@ -1,9 +1,9 @@
-# test_scheduling_window.py
 from datetime import datetime, timedelta
 from app.core.dsa import *
 from app.gui.components import *
 from app.core.events import *
 from nicegui import ui
+
 
 def dump_state(fixed_tree, wt):
     print("=" * 60)
@@ -39,41 +39,37 @@ def dump_state(fixed_tree, wt):
     print(f"synced_version = {wt.synced_version}, fixed entries = {len(wt.fixed)}")
     print("=" * 60)
 
+
 def seed():
     day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    window = Interval(day, day + timedelta(days=1))
 
     fixed_tree = FixedTree()
 
-    # fixed events
     meeting = Meeting(
         title="Team Sync",
         start=day + timedelta(hours=9),
         end=day + timedelta(hours=10),
         pre_buffer=timedelta(minutes=10),
         post_buffer=timedelta(minutes=10),
-        attendees=("alice", "bob"),
+        attendees=("Alice", "Bob"),
+        venue="AC04",
         recurring=False,
     )
     lecture = Lecture(
         title="Algorithms",
         start=day + timedelta(hours=14),
         end=day + timedelta(hours=15, minutes=30),
-        course_code="CS341",
+        course_code="CS-341",
     )
-    '''appt = Appointment(
-        title="Dentist",
-        start=day + timedelta(hours=17),
-        end=day + timedelta(hours=17),
-        attendees=("me",),
-    )'''
-    for ev in (meeting, lecture, ):#appt):
+    appt = Appointment(
+        title="Dental Checkup",
+        start=day + timedelta(hours=18),
+        end=day + timedelta(hours=18),
+        attendees=('Dr. Sahiba',),
+    )
+    for ev in (meeting, lecture, appt):
         fixed_tree.insert(ev)
 
-    # window tree
-    wt = WindowTree(window, fixed_tree)
-
-    # flexible events
     tasks = [
         Task(title="Write report", start=day, end=day + timedelta(hours=2),
              priority=PriorityMatrix.URGENT_IMPORTANT),
@@ -84,22 +80,41 @@ def seed():
         Task(title="Gym", start=day, end=day + timedelta(hours=1, minutes=30),
              priority=PriorityMatrix.NOT_URGENT_NOT_IMPORTANT),
     ]
-    for t in tasks:
-        wt.insert(t, fixed_tree)
 
-    return fixed_tree, wt
+    return fixed_tree, tasks
 
 
 def main():
-    fixed_tree, wt = seed()
-    dump_state(fixed_tree, wt) 
-    
-    ui.page_title("Scheduling Window Test")
+    fixed_tree, tasks = seed()
 
-    with ui.row().classes('items-start gap-8 p-6'):
-        # main timeline
-        with ui.column().classes('gap-2'):
-            ui.label('Scheduling Window').classes('text-lg font-bold')
-            SchedulingWindow(wt).render()
+    controller = SchedulerController(fixed_tree)
+
+    controller.flexibles.extend(tasks)
+    controller._rebuild_wt()
+
+    dump_state(fixed_tree, controller.wt)
+
+    ui.page_title("UI Test")
+
+    with ui.row().classes('w-full justify-end'):
+        with ui.column().classes('w-full max-w-[30rem] flex-1 min-w-0 gap-4'):
+
+            SchedulingWindow(controller).render()
+
+            with ui.row().classes('w-full items-stretch'):
+                with ui.column().classes('flex-1 min-w-0'):
+                    with ui.row().classes('w-full justify-between items-center gap-2'):
+                        WindowSelector(controller).render()
+                        DayTimeSelector.render()
+
+                    # the Calendar lives *inside* this widget; the pill
+                    # swaps it out for the step-by-step flow in place
+                    WindowFlowWidget(controller).render()
+
+                with ui.column().classes('shrink-0'):
+                    Add.render()
+                    PriorityChoice.render()
+                    Undo.render()
+
 
 ui.run(main)

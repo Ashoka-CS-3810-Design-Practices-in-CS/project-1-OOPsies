@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from intervaltree import Interval
+from typing import Literal
 from enum import IntEnum
 from uuid import uuid4
 
@@ -58,13 +59,13 @@ class FlexibleEvent(Event):
 @dataclass(kw_only=True)
 class Meeting(FixedEvent):
     attendees:tuple[str, ...]
-    recurring:bool
+    recurring:Literal['Never', 'Daily', 'Weekly', 'Monthly', 'Yearly'] = 'Weekly'
     venue:str|None = None
 
 @dataclass(kw_only=True)
 class Lecture(FixedEvent):
     course_code:str
-    recurring:bool = True
+    recurring:Literal['Never','Daily', 'Weekly', 'Monthly', 'Yearly'] = 'Weekly'
     venue:str|None = None
 
 @dataclass(kw_only=True)
@@ -96,7 +97,7 @@ class Appointment(PointEvent):
 
 @dataclass(kw_only=True)
 class Occasion(PointEvent):
-    recurring:bool
+    recurring:Literal['Never', 'Daily', 'Weekly', 'Monthly', 'Yearly'] = 'Yearly'
 
 @dataclass(kw_only=True)
 class Deadline(PointEvent):
@@ -109,4 +110,4 @@ class Task(FlexibleEvent):
 
 @dataclass(kw_only=True)
 class Routine(FlexibleEvent):
-    recurring:bool = True
+    recurring:Literal['Never','Daily', 'Weekly', 'Monthly', 'Yearly'] = 'Daily'

@@ -8,5 +8,6 @@ dependencies = [
     "fastapi>=0.143.3",
     "intervaltree>=3.2.1",
     "nicegui>=3.18.0",
+    "python-dateutil>=3.0.0",
     "sphinx>=9.1.0",
 ]

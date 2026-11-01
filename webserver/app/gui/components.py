@@ -62,6 +62,7 @@ class SchedulerController:
         self.in_editor = False
         self.draft_priority: PriorityMatrix | None = None
         self.undo_btn = self.add_btn = None
+        self.deleted_reccurrences: set[tuple[str, date_cls]] = set()
         self._load_day(self.selected_date)
 
     @property
@@ -123,6 +124,8 @@ class SchedulerController:
     def _materialize_for_day(self, s: Event, target: date_cls):
         k = self._occurrence_index(s, target)
         if k is None:
+            return
+        if (s.series_uid, target) in self.deleted_reccurrences:
             return
         if self._already_materialised(s, target):
             return
@@ -230,6 +233,64 @@ class SchedulerController:
         if self.editor:
             self.editor.open()
 
+    # ---------------------------------------------------------------- delete
+
+    def delete_event(self, event: Event):
+        if getattr(event, 'recurring', 'Never') in RECURRENCE_UNIT:
+            self.deleted_reccurrences.add((event.series_uid, event.start.date()))
+
+        if isinstance(event, FixedEvent):
+            self._delete_fixed(event)
+        else:
+            self._delete_flexible(event)
+        self._refresh()
+
+    def _delete_fixed(self, event: FixedEvent):
+        # A pending (conflicted) fixed event was never inserted into the tree.
+        if event.uid in self.pending_fixed:
+            del self.pending_fixed[event.uid]
+            return
+        
+        self.fixed_tree.delete(event)
+
+        for uid, ev in list(self.pending_fixed.items()):
+            if self.fixed_tree.conflict_search(ev) is None:
+                self.fixed_tree.insert(ev)
+                del self.pending_fixed[uid]
+
+        for wt in self.windows.values():
+            wt.sync(self.fixed_tree)
+
+    def _delete_flexible(self, event: FlexibleEvent):
+        for wt in self.windows.values():
+            if event.uid in wt.unscheduled or event.uid in wt.event_dict:
+                wt.delete(event)
+
+    def delete_series(self, series_uid: str):
+        if series_uid not in self.series:
+            return
+        del self.series[series_uid]
+
+        for iv in list(self.fixed_tree.tree):
+            if iv.data.series_uid == series_uid:
+                self.fixed_tree.delete(iv.data)
+        for uid in [u for u, e in self.pending_fixed.items() if e.series_uid == series_uid]:
+            del self.pending_fixed[uid]
+
+        for wt in self.windows.values():
+            occs = [e for slot in wt.tree for e in slot.data.values()
+                    if e.series_uid == series_uid]
+            occs += [e for e in wt.unscheduled.values() if e.series_uid == series_uid]
+            for occ in occs:
+                wt.delete(occ)
+
+        for wt in self.windows.values():
+            wt.sync(self.fixed_tree)
+
+        self.deleted_reccurrences = {
+            (s, d) for s, d in self.deleted_reccurrences if s != series_uid
+        }
+        self._refresh()
 
 class EventUI:
     _active_hover = None
@@ -278,6 +339,28 @@ class EventUI:
     def _noop(self):
         pass
 
+    def _delete(self):
+        ev = self.event
+        if getattr(ev, 'recurring', 'Never') not in RECURRENCE_UNIT:
+            self.controller.delete_event(ev)
+            return
+
+        with ui.dialog() as dialog, ui.card().classes('items-start p-4 gap-2 rounded-sm'):
+            ui.label(f'Delete "{ev.title}"?').classes('text-base font-semibold')
+            ui.label(f'{ev.start:%Y/%m/%d} @ {ev.start:%I:%M %p}').classes('text-xs text-gray-500')
+            ui.label(f'Repeats {ev.recurring}').classes('text-xs text-gray-500')
+
+            with ui.row().classes('w-full justify-end gap-2 pt-2'):
+                ui.button('This Day',
+                        on_click=lambda: (dialog.close(),
+                                            self.controller.delete_event(ev))).props('color=pink-400').style('text-transform: none;')
+                ui.button('All Days',
+                        on_click=lambda: (dialog.close(),
+                                            self.controller.delete_series(ev.series_uid))
+                        ).props('color=pink-400').style('text-transform: none;')
+        dialog.open()
+
+
     def hover_render(self):
         pre = int(self.event.pre_buffer / timedelta(minutes=1))
         post = int(self.event.post_buffer / timedelta(minutes=1))
@@ -299,7 +382,7 @@ class EventUI:
             with body:
                 actions = ui.column().classes('absolute top-2 bottom-2 right-2 gap-1 z-10 justify-between')
                 with actions:
-                    ui.button(icon='delete', on_click=self._noop) \
+                    ui.button(icon='delete', on_click=self._delete) \
                         .props('flat dense round color=white') \
                         .classes('text-white') \
                         .on('click', lambda e: None, ['stop'])
@@ -501,7 +584,7 @@ class SchedulingWindow:
 
         self._event_boxes.clear()
         height = int((w.window.end - w.window.begin) / timedelta(minutes=1))
-        self.wrapper.style(f'height:{height + 56}px; max-height:55vh;')
+        self.wrapper.style(f'height:{height + 56}px; max-height:71vh;')
 
         self.content.clear()
         with self.content:
@@ -608,12 +691,20 @@ class WindowSelector:
         c.on('click', lambda: self._pick_time(which))
         return d, t, tri, c, content
 
+    def set_end_disabled(self, disabled: bool):
+        if self.end_col is None:
+            return
+        if disabled:
+            self.end_col.classes(add='disabled pointer-events-none')
+        else:
+            self.end_col.classes(remove='disabled pointer-events-none')
+
     def _pick_time(self, which):
         if not self.editor_mode:
             return
         cur = self._draft_start if which == 'start' else self._draft_end
-        # For the end side, default the picker to 23:59 (11:59 PM) instead of the current end time
-        display_time = cur.strftime('%H:%M') if which == 'start' else '23:59'
+        # Sync the picker with whatever the pill currently shows.
+        display_time = cur.strftime('%H:%M')
         with ui.dialog() as dialog, ui.card().classes('items-center p-0 border-2 border-gray-300 shadow-none overflow-hidden rounded-2xl'):
             tp = ui.time(value=display_time).props('color=pink-400 flat')
             with ui.row().classes('w-full justify-end p-5 bg-white'):
@@ -649,6 +740,7 @@ class WindowSelector:
     def enter_editor_mode(self, start, end, on_change=None):
         self.editor_mode = True
         self._draft_start, self._draft_end, self._on_change = start, end, on_change
+        self.set_end_disabled(False)
         self.start_col.classes(add='cursor-pointer hover:bg-gray-50')
         self.end_col.classes(add='cursor-pointer hover:bg-gray-50')
         self.start_content.classes(add='-translate-y-1.5')
@@ -661,6 +753,7 @@ class WindowSelector:
         self.editor_mode = False
         self.start_only = False
         self._draft_start = self._draft_end = self._on_change = None
+        self.set_end_disabled(False)
         self.start_col.classes(remove='cursor-pointer hover:bg-gray-50')
         self.end_col.classes(remove='cursor-pointer hover:bg-gray-50')
         self.start_content.classes(remove='-translate-y-1.5')
@@ -679,11 +772,11 @@ class WindowSelector:
             self.end_time.text = self._draft_end.strftime('%I:%M %p')
             return
         w = self.controller.current_wt.window
+        display_end = w.end - timedelta(minutes=1)
         self.start_date.text = w.begin.strftime('%Y/%m/%d')
         self.start_time.text = w.begin.strftime('%I:%M %p')
-        self.end_date.text = w.end.strftime('%Y/%m/%d')
-        self.end_time.text = w.end.strftime('%I:%M %p')
-
+        self.end_date.text = display_end.strftime('%Y/%m/%d')
+        self.end_time.text = display_end.strftime('%I:%M %p')
 
 class DayTimeSelector:
     BUCKETS = [
@@ -721,7 +814,17 @@ class DayTimeSelector:
             bs, be = TIME_BUCKETS[key]
             start = datetime.combine(d, bs)
             end = datetime.combine(d, be)
-            self.controller.pill.enter_editor_mode(start, end)
+
+            pill = self.controller.pill
+            if pill.start_only:
+                # Start-only mode: change the start only; end follows start.
+                pill._draft_start = start
+                pill._draft_end = start
+                pill.refresh()
+                if pill._on_change:
+                    pill._on_change(start, start)
+            else:
+                pill.enter_editor_mode(start, end)
 
             # Flash the selected icon pink
             for k, icon in self.icons.items():
@@ -746,7 +849,6 @@ class DayTimeSelector:
                 icon.classes(add='text-pink-400 scale-110', remove='text-gray-800 scale-100')
             else:
                 icon.classes(add='text-gray-800 scale-100', remove='text-pink-400 scale-110')
-
 
 
 class PriorityChoice:
@@ -811,7 +913,7 @@ class Calendar:
     def render(self):
         self.outer = ui.element('div').classes(
             'border-2 border-gray-900 rounded-2xl p-2 w-full flex-1 flex items-center '
-            'justify-center min-h-[28vh] overflow-hidden'
+            'justify-center min-h-[40vh] overflow-hidden'
         )
         with self.outer:
             with ui.element('div').classes('w-full h-full max-w-full max-h-full flex items-center justify-center overflow-auto'):
@@ -853,12 +955,13 @@ class EventEditor:
         self.controller = controller
         controller.editor = self
         self.outer = self.title_input = self.category_select = self.fields_area = None
+        self.pre_input = self.post_input = None
         self.draft: dict = {}
         self.active = False
 
     def render(self):
         self.outer = ui.element('div').classes(
-            'justify-center items-center border-2 border-gray-900 rounded-2xl p-2 w-full flex-1 min-h-[28vh] overflow-hidden'
+            'justify-center items-center border-2 border-gray-900 rounded-2xl p-2 w-full flex-1 min-h-[40vh] overflow-hidden'
         )
         self.outer.set_visibility(False)
         with self.outer:
@@ -867,7 +970,17 @@ class EventEditor:
                     self.title_input = ui.input('Title').classes('w-1/3 text-sm').props('color=pink-400')
                     self.category_select = ui.select(
                         list(CATEGORIES.keys()), label='Category', on_change=self._on_category, with_input=True
-                    ).props('popup-content-class=text-center color=pink-400').classes('w-1/2 text-sm')
+                    ).props('popup-content-class=text-center color=pink-400 options-dense').classes('w-1/2 text-sm')
+                with ui.row().classes('w-full items-center justify-center gap-6 mt-auto pt-2'):
+                    self.pre_input = ui.number('Pre-buffer (min)', value=5, min=0, step=1,
+                        on_change=lambda e: self.draft.__setitem__(
+                            'pre_buffer', timedelta(minutes=max(0, int(e.value or 0))))
+                    ).props('color=pink-400').classes('w-2/5')
+
+                    self.post_input = ui.number('Post-buffer (min)', value=5, min=0, step=1,
+                        on_change=lambda e: self.draft.__setitem__(
+                            'post_buffer', timedelta(minutes=max(0, int(e.value or 0))))
+                    ).props('color=pink-400').classes('w-2/5')
                     
                 self.fields_area = ui.column().classes('w-full justify-center items-center gap-2 flex-1 overflow-auto ')
 
@@ -881,6 +994,13 @@ class EventEditor:
         self.category_select.value = None
         self.fields_area.clear()
         self.draft = {}
+        self._saved_pre  = 5
+        self._saved_post = 5
+        self._currently_point = False
+        self.pre_input.value  = 5
+        self.post_input.value = 5
+        self.pre_input.props(remove='disable')
+        self.post_input.props(remove='disable')
 
         # Reset DayTimeSelector visual state
         if hasattr(self.controller, 'day_time_selector'):
@@ -895,7 +1015,7 @@ class EventEditor:
             start, end = datetime.combine(d, bs), datetime.combine(d, be)
         else:
             start = self.controller.current_wt.window.begin
-            end = self.controller.current_wt.window.end
+            end = datetime.combine(start.date(), time_cls(23, 59))
 
         self.controller.pill.enter_editor_mode(start, end)
         if self.controller.calendar and self.controller.calendar.outer:
@@ -942,11 +1062,39 @@ class EventEditor:
         pill.start_only = (cat in START_TIME_ONLY)
         if pill.start_only:
             pill._draft_end = pill._draft_start
-        elif pill._draft_end <= pill._draft_start:
-            pill._draft_end = pill._draft_start + timedelta(hours=1)
+            pill.set_end_disabled(True)
+        else:
+            pill.set_end_disabled(False)
+            if pill._draft_end <= pill._draft_start:
+                pill._draft_end = datetime.combine(
+                    pill._draft_start.date(), time_cls(23, 59)
+                )
         pill.refresh()
         
         cls = CATEGORIES[cat]
+        is_point = issubclass(cls, PointEvent)
+
+        if is_point:
+            if not self._currently_point:
+                self._saved_pre  = int(self.pre_input.value  or 0)
+                self._saved_post = int(self.post_input.value or 0)
+            self.pre_input.value = 0
+            self.post_input.value = 0
+            self.pre_input.props(add='disable')
+            self.post_input.props(add='disable')
+            self.draft.pop('pre_buffer', None)
+            self.draft.pop('post_buffer', None)
+            self._currently_point = True
+        else:
+            if self._currently_point:
+                self.pre_input.value  = self._saved_pre
+                self.post_input.value = self._saved_post
+            self.pre_input.props(remove='disable')
+            self.post_input.props(remove='disable')
+            self.draft['pre_buffer']  = timedelta(minutes=max(0, int(self.pre_input.value  or 0)))
+            self.draft['post_buffer'] = timedelta(minutes=max(0, int(self.post_input.value or 0)))
+            self._currently_point = False
+
         supports_priority = issubclass(cls, FlexibleEvent)
         if self.controller.priority_filter_widget:
             self.controller.priority_filter_widget.set_enabled(supports_priority)
@@ -1003,7 +1151,7 @@ class EventEditor:
                     value=default,
                     with_input=True,
                     on_change=lambda e, n=f.name: self.draft.__setitem__(n, e.value),
-                ).props('popup-content-class=text-center color=pink-400').classes('w-full text-sm')
+                ).props('popup-content-class=text-center color=pink-400 options-dense').classes('w-full text-sm')
 
     def save(self):
         cat = self.category_select.value
@@ -1019,10 +1167,14 @@ class EventEditor:
             ui.notify('Set valid start and end times', color='negative'); return
 
         cls = CATEGORIES[cat]
+        is_point = issubclass(cls, PointEvent)
+
         kwargs = {'title': title, 'start': start, 'end': end}
 
         for f in fields(cls):
             if f.name in PROP_SKIP or f.name in ('uid', 'series_uid'):
+                if f.name in ('pre_buffer', 'post_buffer') and not is_point:
+                    kwargs[f.name] = self.draft.get(f.name, timedelta(minutes=5))
                 continue
             if f.name == 'priority':
                 if issubclass(cls, FlexibleEvent):
@@ -1068,7 +1220,7 @@ class PendingBar:
         self.row = None
 
     def render(self):
-        with ui.element('div').classes('w-full h-16 shrink-0 flex items-center'):
+        with ui.element('div').classes('w-full h-16 shrink-0 flex items-center mb-4'):
             ui.label('Pending:').classes(
                 'text-xs font-semibold text-gray-600 px-2 pt-1 shrink-0 leading-none'
             )
@@ -1090,20 +1242,23 @@ class PendingBar:
             for ev, color, kind in entries:
                 self._card(ev, color, kind)
             if not entries:
-                ui.label('NA').classes(
+                ui.label('No events currently pending.').classes(
                     'text-xs text-gray-400 px-3 h-14 flex items-center'
                 )
 
     def _card(self, ev, color, kind):
         card = ui.element('div').classes(
             'h-14 w-40 shrink-0 rounded-lg px-2 py-1 cursor-pointer '
-            'shadow-sm transition-transform duration-200 hover:scale-105'
+            'shadow-sm transition-transform duration-200 hover:scale-105 relative'
         ).style(f'background:{color};')
         day = ev.start.date()
-        card.on('click', lambda: lambda: None if self.controller.in_editor else re_edit())
+        card.on('click', lambda: None if self.controller.in_editor else re_edit())
         with card:
-            ui.label(ev.title).classes('text-xs font-bold text-white truncate leading-tight')
-            ui.label(f'{kind} \n on {ev.start:%Y/%m/%d}').classes('whitespace-pre-line text-[10px] text-white opacity-80 truncate')
-
+            ui.label(ev.title).classes('text-xs font-bold text-white truncate leading-tight pr-6')
+            ui.label(f'{kind} \n on {ev.start:%Y/%m/%d}').classes('whitespace-pre-line text-[10px] text-white opacity-80 truncate pr-6')
+            ui.button(icon='delete', on_click=lambda e=ev: self.controller.delete_event(e)) \
+                .props('flat dense round color=white size=sm') \
+                .classes('absolute top-0 right-0 m-0.5') \
+                .on('click', lambda e: None, ['stop'])
 def re_edit():
     pass

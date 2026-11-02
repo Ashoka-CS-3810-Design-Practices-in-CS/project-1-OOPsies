@@ -5,6 +5,14 @@ from typing import get_origin, get_args
 from app.core.events import *
 from app.core.dsa import *
 from nicegui import ui
+import pickle
+
+
+PICKLE_FIELDS = (
+    'fixed_tree', 'windows', 'current_wt', 'selected_date',
+    'time_filter', 'priority_filter', 'series', 'pending_fixed',
+    'deleted_reccurrences',
+)
 
 PX_PER_HOUR = 60
 
@@ -70,6 +78,30 @@ class SchedulerController:
         return {uid: (wt, e)
                 for wt in self.windows.values()
                 for uid, e in wt.unscheduled.items()}
+
+    def __getstate__(self):
+        return {f: getattr(self, f) for f in PICKLE_FIELDS}
+
+    def __setstate__(self, state):
+        for f, v in state.items():
+            setattr(self, f, v)
+        # UI handles get rebuilt when main() renders the widgets.
+        self.sched_view = self.calendar = self.pill = None
+        self.editor = None
+        self.priority_filter_widget = None
+        self.pending_bar = None
+        self.undo_btn = self.add_btn = None
+        self.in_editor = False
+        self.draft_priority = None
+
+    def save(self, path: str = 'scheduler.pkl') -> None:
+        with open(path, 'wb') as f:
+            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    @classmethod
+    def load(cls, path: str = 'scheduler.pkl') -> 'SchedulerController':
+        with open(path, 'rb') as f:
+            return pickle.load(f)
 
     # ------------------------------------------------------------------ windows
 
@@ -229,9 +261,9 @@ class SchedulerController:
         if self.sched_view:
             self.sched_view.apply_visibility()
 
-    def open_editor(self):
+    def open_editor(self, event: Event | None = None):
         if self.editor:
-            self.editor.open()
+            self.editor.open(event)
 
     # ---------------------------------------------------------------- delete
 
@@ -336,8 +368,8 @@ class EventUI:
             out[f.name] = val
         return out
 
-    def _noop(self):
-        pass
+    def _edit(self):
+        self.controller.open_editor(self.event)
 
     def _delete(self):
         ev = self.event
@@ -386,7 +418,7 @@ class EventUI:
                         .props('flat dense round color=white') \
                         .classes('text-white') \
                         .on('click', lambda e: None, ['stop'])
-                    ui.button(icon='edit', on_click=self._noop) \
+                    ui.button(icon='edit', on_click=self._edit) \
                         .props('flat dense round color=white') \
                         .classes('text-white') \
                         .on('click', lambda e: None, ['stop'])
@@ -957,6 +989,7 @@ class EventEditor:
         self.pre_input = self.post_input = None
         self.draft: dict = {}
         self.active = False
+        self.editing_event: Event | None = None
 
     def render(self):
         self.outer = ui.element('div').classes(
@@ -980,24 +1013,30 @@ class EventEditor:
                         on_change=lambda e: self.draft.__setitem__(
                             'post_buffer', timedelta(minutes=max(0, int(e.value or 0))))
                     ).props('color=pink-400').classes('w-2/5')
-                    
+
                 self.fields_area = ui.column().classes('w-full justify-center items-center gap-2 flex-1 overflow-auto ')
 
-    def open(self):
+    def open(self, event: Event | None = None):
         if self.active:
             return
         self.active = True
         self.controller.in_editor = True
         self.controller.draft_priority = None
-        self.title_input.value = ''
+        self.editing_event = event
+        self.title_input.value = event.title if event else ''
         self.category_select.value = None
         self.fields_area.clear()
         self.draft = {}
-        self._saved_pre  = 5
-        self._saved_post = 5
-        self._currently_point = False
-        self.pre_input.value  = 5
-        self.post_input.value = 5
+
+        if event is not None and not isinstance(event, PointEvent):
+            self._saved_pre  = int(event.pre_buffer  / timedelta(minutes=1))
+            self._saved_post = int(event.post_buffer / timedelta(minutes=1))
+        else:
+            self._saved_pre  = 5
+            self._saved_post = 5
+        self._currently_point = isinstance(event, PointEvent) if event else False
+        self.pre_input.value  = self._saved_pre
+        self.post_input.value = self._saved_post
         self.pre_input.props(remove='disable')
         self.post_input.props(remove='disable')
 
@@ -1008,30 +1047,38 @@ class EventEditor:
                 icon.classes(add='text-gray-800 scale-100', remove='text-pink-400 scale-110')
 
         d = self.controller.selected_date
-        bucket = next(iter(self.controller.time_filter), None)
-        if bucket in TIME_BUCKETS:
-            bs, be = TIME_BUCKETS[bucket]
-            start, end = datetime.combine(d, bs), datetime.combine(d, be)
+        if event is not None:
+            start, end = event.start, event.end
         else:
-            start = self.controller.current_wt.window.begin
-            end = datetime.combine(start.date(), time_cls(23, 59))
+            bucket = next(iter(self.controller.time_filter), None)
+            if bucket in TIME_BUCKETS:
+                bs, be = TIME_BUCKETS[bucket]
+                start, end = datetime.combine(d, bs), datetime.combine(d, be)
+            else:
+                start = self.controller.current_wt.window.begin
+                end = datetime.combine(start.date(), time_cls(23, 59))
 
         self.controller.pill.enter_editor_mode(start, end)
         if self.controller.calendar and self.controller.calendar.outer:
             self.controller.calendar.outer.set_visibility(False)
         self.outer.set_visibility(True)
-        
-        if self.controller.priority_filter_widget:
+
+        if self.controller.priority_filter_widget and event is None:
             self.controller.priority_filter_widget.select(None)
             self.controller.priority_filter_widget.set_enabled(False)
 
         self.controller.undo_btn.props('icon=close')
         self.controller.add_btn.props('icon=save')
 
+        if event is not None:
+            self.category_select.value = event.__class__.__name__
+            self._on_category(None, initial=event)
+
     def close(self):
         if not self.active:
             return
         self.active = False
+        self.editing_event = None
         self.controller.in_editor = False
         self.outer.set_visibility(False)
         if self.controller.calendar and self.controller.calendar.outer:
@@ -1039,7 +1086,7 @@ class EventEditor:
         self.controller.pill.exit_editor_mode()
         self.fields_area.clear()
         self.draft = {}
-        
+
         if self.controller.priority_filter_widget:
             self.controller.priority_filter_widget.set_enabled(True)
             self.controller.priority_filter_widget.select(self.controller.priority_filter)
@@ -1047,11 +1094,11 @@ class EventEditor:
         self.controller.undo_btn.props('icon=undo')
         self.controller.add_btn.props('icon=add')
 
-    def _on_category(self, e):
+    def _on_category(self, e, initial=None):
         self.fields_area.clear()
         self.draft = {}
         self.controller.draft_priority = None
-        cat = e.value
+        cat = initial.__class__.__name__ if initial is not None else (e.value if e else None)
         if not cat:
             if self.controller.priority_filter_widget:
                 self.controller.priority_filter_widget.set_enabled(False)
@@ -1069,7 +1116,7 @@ class EventEditor:
                     pill._draft_start.date(), time_cls(23, 59)
                 )
         pill.refresh()
-        
+
         cls = CATEGORIES[cat]
         is_point = issubclass(cls, PointEvent)
 
@@ -1099,6 +1146,8 @@ class EventEditor:
             self.controller.priority_filter_widget.set_enabled(supports_priority)
             if not supports_priority:
                 self.controller.priority_filter_widget.select(None)
+            elif initial is not None:
+                self.controller.priority_filter_widget.select(initial.priority)
 
         with self.fields_area:
             f_recurring = None
@@ -1108,10 +1157,10 @@ class EventEditor:
                 if f.name == 'recurring':
                     f_recurring = f
                     continue
-                self._render_field(f)
-            self._render_field(f_recurring)
+                self._render_field(f, initial)
+            self._render_field(f_recurring, initial)
 
-    def _render_field(self, f):
+    def _render_field(self, f, initial=None):
         if f is None: return
         t = f.type
         optional = type(None) in get_args(t)
@@ -1122,9 +1171,13 @@ class EventEditor:
         origin = get_origin(inner)
         label = f.name.replace('_', ' ').title()
 
-        default = f.default if f.default is not MISSING else (
-            f.default_factory() if f.default_factory is not MISSING else None
-        )
+        if initial is not None:
+            default = getattr(initial, f.name, None)
+            self.draft[f.name] = default
+        else:
+            default = f.default if f.default is not MISSING else (
+                f.default_factory() if f.default_factory is not MISSING else None
+            )
 
         if origin in (tuple, list, set):
             with ui.row().classes('justify-center w-5/6'):
@@ -1195,22 +1248,72 @@ class EventEditor:
         except Exception as ex:
             ui.notify(f'Error: {ex}', color='negative'); return
 
-        if isinstance(event, FixedEvent):
-            if self.controller.fixed_tree.conflict_search(event) is not None:
-                ui.notify('Conflicts with a fixed event', color='negative'); return
-            self.controller.fixed_tree.insert(event)
-            for wt in self.controller.windows.values():
-                wt.sync(self.controller.fixed_tree)
+        if self.editing_event is not None:
+            if not self._save_edit(event):
+                return
         else:
-            try:
-                self.controller.current_wt.insert(event, self.controller.fixed_tree)
-            except ValueError as ex:
-                ui.notify(str(ex), color='negative'); return
+            if isinstance(event, FixedEvent):
+                if self.controller.fixed_tree.conflict_search(event) is not None:
+                    ui.notify('Conflicts with a fixed event', color='negative'); return
+                self.controller.fixed_tree.insert(event)
+                for wt in self.controller.windows.values():
+                    wt.sync(self.controller.fixed_tree)
+            else:
+                try:
+                    self.controller.current_wt.insert(event, self.controller.fixed_tree)
+                except ValueError as ex:
+                    ui.notify(str(ex), color='negative'); return
 
-        if getattr(event, 'recurring', 'Never') != 'Never':
-            self.controller.register_series(event)
+            if getattr(event, 'recurring', 'Never') != 'Never':
+                self.controller.register_series(event)
+
         self.close()
         self.controller._refresh()
+
+    def _save_edit(self, new_event: Event) -> bool:
+        old = self.editing_event
+        old_was_recurring = getattr(old, 'recurring', 'Never') in RECURRENCE_UNIT
+        old_was_pending   = isinstance(old, FixedEvent) and old.uid in self.controller.pending_fixed
+
+        # delete_event already records (series_uid, date) for recurring removals
+        self.controller.delete_event(old)
+
+        def restore_old():
+            if old_was_recurring:
+                self.controller.deleted_reccurrences.discard((old.series_uid, old.start.date()))
+            if isinstance(old, FixedEvent):
+                if old_was_pending:
+                    self.controller.pending_fixed[old.uid] = old
+                elif self.controller.fixed_tree.conflict_search(old) is None:
+                    self.controller.fixed_tree.insert(old)
+                    for wt in self.controller.windows.values():
+                        wt.sync(self.controller.fixed_tree)
+            else:
+                try:
+                    self.controller.current_wt.insert(old, self.controller.fixed_tree)
+                except ValueError:
+                    pass
+
+        try:
+            if isinstance(new_event, FixedEvent):
+                if self.controller.fixed_tree.conflict_search(new_event) is not None:
+                    raise ValueError('Conflicts with a fixed event')
+                self.controller.fixed_tree.insert(new_event)
+                for wt in self.controller.windows.values():
+                    wt.sync(self.controller.fixed_tree)
+            else:
+                self.controller.current_wt.insert(new_event, self.controller.fixed_tree)
+        except ValueError as ex:
+            ui.notify(str(ex), color='negative')
+            restore_old()
+            return False
+
+        # A one-off override for a recurring source: do NOT register as a series,
+        # or future days would materialise both old and new occurrences.
+        if not old_was_recurring and getattr(new_event, 'recurring', 'Never') != 'Never':
+            self.controller.register_series(new_event)
+
+        return True
 
 class PendingBar:
     def __init__(self, controller: SchedulerController):
@@ -1251,7 +1354,8 @@ class PendingBar:
             'shadow-sm transition-transform duration-200 hover:scale-105 relative'
         ).style(f'background:{color};')
         day = ev.start.date()
-        card.on('click', lambda: None if self.controller.in_editor else re_edit())
+        card.on('click', lambda ev=ev: None if self.controller.in_editor
+                             else self.controller.open_editor(ev))
         with card:
             ui.label(ev.title).classes('text-xs font-bold text-white truncate leading-tight pr-6')
             ui.label(f'{kind} \n on {ev.start:%Y/%m/%d}').classes('whitespace-pre-line text-[10px] text-white opacity-80 truncate pr-6')
@@ -1259,5 +1363,3 @@ class PendingBar:
                 .props('flat dense round color=white size=sm') \
                 .classes('absolute top-0 right-0 m-0.5') \
                 .on('click', lambda e: None, ['stop'])
-def re_edit():
-    pass

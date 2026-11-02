@@ -4,15 +4,9 @@ from dateutil.relativedelta import relativedelta
 from typing import get_origin, get_args
 from app.core.events import *
 from app.core.dsa import *
-from nicegui import ui
+from nicegui import ui, app
 import pickle
-
-
-PICKLE_FIELDS = (
-    'fixed_tree', 'windows', 'current_wt', 'selected_date',
-    'time_filter', 'priority_filter', 'series', 'pending_fixed',
-    'deleted_reccurrences',
-)
+import base64
 
 PX_PER_HOUR = 60
 
@@ -53,6 +47,15 @@ TIME_BUCKETS = {
 PROP_SKIP = {'title', 'start', 'end', 'uid', 'series_uid', 'pre_buffer',
              'post_buffer', 'flexible', 'missed', 'seen'}
 
+def _encode_state(obj) -> str:
+    return base64.b64encode(
+        pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+    ).decode("ascii")
+
+
+def _decode_state(s: str):
+    return pickle.loads(base64.b64decode(s.encode("ascii")))
+
 class SchedulerController:
     def __init__(self, fixed_tree: FixedTree):
         self.fixed_tree = fixed_tree
@@ -79,29 +82,109 @@ class SchedulerController:
                 for wt in self.windows.values()
                 for uid, e in wt.unscheduled.items()}
 
-    def __getstate__(self):
-        return {f: getattr(self, f) for f in PICKLE_FIELDS}
+    # ------------------------------------------------------------- snapshots
 
-    def __setstate__(self, state):
-        for f, v in state.items():
-            setattr(self, f, v)
-        # UI handles get rebuilt when main() renders the widgets.
-        self.sched_view = self.calendar = self.pill = None
-        self.editor = None
-        self.priority_filter_widget = None
-        self.pending_bar = None
-        self.undo_btn = self.add_btn = None
-        self.in_editor = False
-        self.draft_priority = None
+    def _snapshot_data(self) -> dict:
+        """Everything needed to reconstruct the data state.
+        GUI widget references are deliberately excluded (they aren't picklable)."""
+        return {
+            "fixed_tree": self.fixed_tree,
+            "windows": self.windows,
+            "selected_date": self.selected_date,
+            "time_filter": set(self.time_filter),
+            "priority_filter": self.priority_filter,
+            "series": dict(self.series),
+            "pending_fixed": dict(self.pending_fixed),
+            "deleted_reccurrences": set(self.deleted_reccurrences),
+        }
 
-    def save(self, path: str = 'scheduler.pkl') -> None:
-        with open(path, 'wb') as f:
-            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+    def _restore_snapshot(self, snap: dict):
+        self.fixed_tree = snap["fixed_tree"]
+        self.windows = snap["windows"]
+        self.selected_date = snap["selected_date"]
+        self.time_filter = set(snap["time_filter"])
+        self.priority_filter = snap["priority_filter"]
+        self.series = dict(snap["series"])
+        self.pending_fixed = dict(snap["pending_fixed"])
+        self.deleted_reccurrences = set(snap["deleted_reccurrences"])
 
-    @classmethod
-    def load(cls, path: str = 'scheduler.pkl') -> 'SchedulerController':
-        with open(path, 'rb') as f:
-            return pickle.load(f)
+        if self.selected_date not in self.windows:
+            self._ensure_window(self.selected_date)
+        self.current_wt = self.windows[self.selected_date]
+
+        # Re-sync external filter widgets to the restored state.
+        if self.priority_filter_widget:
+            self.priority_filter_widget.set_enabled(True)
+            self.priority_filter_widget.select(self.priority_filter)
+
+        dts = getattr(self, "day_time_selector", None)
+        if dts:
+            for k, icon in dts.icons.items():
+                if k in self.time_filter:
+                    icon.classes(add="text-pink-400 scale-110",
+                                 remove="text-gray-800 scale-100")
+                else:
+                    icon.classes(add="text-gray-800 scale-100",
+                                 remove="text-pink-400 scale-110")
+
+    def init_snapshots(self):
+        """Seed current == prev on first run; restore persisted state on reload."""
+        cur = app.storage.user.get("current_snap")
+        if cur is not None:
+            try:
+                self._restore_snapshot(_decode_state(cur))
+                self._refresh()          # repaint scheduling window / calendar / pill / pending bar
+                return
+            except Exception:
+                # Snapshot from an incompatible code version, or corrupted pickle.
+                app.storage.user.pop("current_snap", None)
+                app.storage.user.pop("prev_snap", None)
+
+        # First ever load (or we just nuked a bad snapshot): seed it.
+        snap = _encode_state(self._snapshot_data())
+        app.storage.user["current_snap"] = snap
+        app.storage.user["prev_snap"] = snap
+        self._update_undo_btn()
+
+    def push_snapshot(self):
+        """Move current → prev, capture the new live state as current."""
+        new_snap = _encode_state(self._snapshot_data())
+        cur = app.storage.user.get("current_snap")
+        if cur == new_snap:
+            # Nothing actually changed; don't create a bogus undo point.
+            return
+        app.storage.user["prev_snap"] = cur
+        app.storage.user["current_snap"] = new_snap
+        self._update_undo_btn()
+
+    def undo(self):
+        cur = app.storage.user.get("current_snap")
+        prev = app.storage.user.get("prev_snap")
+        if cur is None or prev is None or cur == prev:
+            return
+
+        snap = _decode_state(prev)
+        if self.in_editor and self.editor:
+            self.editor.close()
+
+        self._restore_snapshot(snap)
+        # "on undo, set current as prev"
+        app.storage.user["current_snap"] = prev
+        self._update_undo_btn()
+        self._refresh()
+
+    def _update_undo_btn(self):
+        if not self.undo_btn:
+            return
+        if self.in_editor:
+            # In editor mode the same button acts as "close"; leave it enabled.
+            return
+        cur = app.storage.user.get("current_snap")
+        prev = app.storage.user.get("prev_snap")
+        if cur is None or cur == prev:
+            self.undo_btn.props(add="disable")
+        else:
+            self.undo_btn.props(remove="disable")
 
     # ------------------------------------------------------------------ windows
 
@@ -211,7 +294,14 @@ class SchedulerController:
             try:
                 wt.insert(occ, self.fixed_tree)
             except ValueError:
-                wt.unscheduled[occ.uid] = occ
+                if not (wt.window.begin <= occ.true_start and occ.true_end <= wt.window.end):
+                    wt.unscheduled[occ.uid] = occ
+                else:
+                    orig = (occ.start, occ.end)
+                    occ.seen.clear()
+                    wt.cascade([occ])
+                    if occ.uid in wt.unscheduled:
+                        occ.start, occ.end = orig
 
     def register_series(self, event: Event):
         self.series[event.series_uid] = event
@@ -261,13 +351,26 @@ class SchedulerController:
         if self.sched_view:
             self.sched_view.apply_visibility()
 
-    def open_editor(self, event: Event | None = None):
+    def open_editor(self):
+        if self.editor:
+            self.editor.open()
+
+    def edit_event(self, event):
         if self.editor:
             self.editor.open(event)
 
     # ---------------------------------------------------------------- delete
 
-    def delete_event(self, event: Event):
+    def _promote_pending(self):
+        for uid, ev in list(self.pending_fixed.items()):
+            if self.fixed_tree.conflict_search(ev) is None:
+                self.fixed_tree.insert(ev)
+                del self.pending_fixed[uid]
+
+    def delete_event(self, event: Event, snapshot: bool = True):
+        if self.in_editor:
+            return
+        
         if getattr(event, 'recurring', 'Never') in RECURRENCE_UNIT:
             self.deleted_reccurrences.add((event.series_uid, event.start.date()))
 
@@ -276,6 +379,8 @@ class SchedulerController:
         else:
             self._delete_flexible(event)
         self._refresh()
+        if snapshot:
+            self.push_snapshot()
 
     def _delete_fixed(self, event: FixedEvent):
         # A pending (conflicted) fixed event was never inserted into the tree.
@@ -284,11 +389,7 @@ class SchedulerController:
             return
         
         self.fixed_tree.delete(event)
-
-        for uid, ev in list(self.pending_fixed.items()):
-            if self.fixed_tree.conflict_search(ev) is None:
-                self.fixed_tree.insert(ev)
-                del self.pending_fixed[uid]
+        self._promote_pending()
 
         for wt in self.windows.values():
             wt.sync(self.fixed_tree)
@@ -298,7 +399,7 @@ class SchedulerController:
             if event.uid in wt.unscheduled or event.uid in wt.event_dict:
                 wt.delete(event)
 
-    def delete_series(self, series_uid: str):
+    def delete_series(self, series_uid: str, snapshot: bool = True):
         if series_uid not in self.series:
             return
         del self.series[series_uid]
@@ -310,11 +411,17 @@ class SchedulerController:
             del self.pending_fixed[uid]
 
         for wt in self.windows.values():
-            occs = [e for slot in wt.tree for e in slot.data.values()
-                    if e.series_uid == series_uid]
-            occs += [e for e in wt.unscheduled.values() if e.series_uid == series_uid]
-            for occ in occs:
+            while True:
+                occ = next((e for e in wt.unscheduled.values()
+                            if e.series_uid == series_uid), None)
+                if occ is None:
+                    occ = next((e for slot in wt.tree for e in slot.data.values()
+                                if e.series_uid == series_uid), None)
+                if occ is None:
+                    break
                 wt.delete(occ)
+
+        self._promote_pending()
 
         for wt in self.windows.values():
             wt.sync(self.fixed_tree)
@@ -323,6 +430,8 @@ class SchedulerController:
             (s, d) for s, d in self.deleted_reccurrences if s != series_uid
         }
         self._refresh()
+        if snapshot:
+            self.push_snapshot()
 
 class EventUI:
     _active_hover = None
@@ -367,9 +476,6 @@ class EventUI:
                 val = f.default_factory()
             out[f.name] = val
         return out
-
-    def _edit(self):
-        self.controller.open_editor(self.event)
 
     def _delete(self):
         ev = self.event
@@ -418,7 +524,7 @@ class EventUI:
                         .props('flat dense round color=white') \
                         .classes('text-white') \
                         .on('click', lambda e: None, ['stop'])
-                    ui.button(icon='edit', on_click=self._edit) \
+                    ui.button(icon='edit', on_click=lambda: self.controller.edit_event(self.event)) \
                         .props('flat dense round color=white') \
                         .classes('text-white') \
                         .on('click', lambda e: None, ['stop'])
@@ -755,8 +861,7 @@ class WindowSelector:
             self._draft_start = self._draft_start.replace(hour=h, minute=m, second=0, microsecond=0)
             if self.start_only:
                 self._draft_end = self._draft_start
-            elif self._draft_end <= self._draft_start:
-                self._draft_end = self._draft_start + timedelta(hours=1)
+            # else: leave _draft_end untouched; save() validates end > start
         else:
             # Keep the end on the same day as the start (no next-day rollover)
             self._draft_end = self._draft_start.replace(hour=h, minute=m, second=0, microsecond=0)
@@ -966,9 +1071,9 @@ class Calendar:
 
 
 def render_undo(controller):
-    controller.undo_btn = btn = ui.button(icon='undo').props('round outline color=grey-9') \
-        .classes('h-14 w-14 min-w-0 shrink-0 border-2 shadow-none')
-    btn.on('click', lambda: controller.editor.close() if controller.in_editor else None)
+    controller.undo_btn = btn = ui.button(icon="undo").props(
+        "round outline color=grey-9").classes("h-14 w-14 min-w-0 shrink-0 border-2 shadow-none")
+    btn.on("click", lambda: controller.editor.close() if controller.in_editor else controller.undo(),)
     return btn
 
 def render_add(controller):
@@ -990,7 +1095,8 @@ class EventEditor:
         self.pre_input = self.post_input = None
         self.draft: dict = {}
         self.active = False
-        self.editing_event: Event | None = None
+        self.edit_target = None
+        self._orig_date = None
 
     def render(self):
         self.outer = ui.element('div').classes(
@@ -1022,35 +1128,28 @@ class EventEditor:
             return
         self.active = True
         self.controller.in_editor = True
-        self.controller.draft_priority = None
-        self.editing_event = event
-        self.title_input.value = event.title if event else ''
-        self.category_select.value = None
+        self.edit_target = event
+        self._orig_date = event.start.date() if event else None
+
+        self.title_input.value = '' if event is None else event.title
         self.fields_area.clear()
         self.draft = {}
 
-        if event is not None and not isinstance(event, PointEvent):
-            self._saved_pre  = int(event.pre_buffer  / timedelta(minutes=1))
-            self._saved_post = int(event.post_buffer / timedelta(minutes=1))
-        else:
-            self._saved_pre  = 5
-            self._saved_post = 5
-        self._currently_point = isinstance(event, PointEvent) if event else False
-        self.pre_input.value  = self._saved_pre
-        self.post_input.value = self._saved_post
-        self.pre_input.props(remove='disable')
-        self.post_input.props(remove='disable')
-
-        # Reset DayTimeSelector visual state
-        if hasattr(self.controller, 'day_time_selector'):
-            self.controller.day_time_selector.active_bucket = None
-            for icon in self.controller.day_time_selector.icons.values():
-                icon.classes(add='text-gray-800 scale-100', remove='text-pink-400 scale-110')
-
-        d = self.controller.selected_date
-        if event is not None:
-            start, end = event.start, event.end
-        else:
+        if event is None:
+            # ── original "new event" path ────────────────────────────────
+            self.category_select.value = None
+            self.category_select.props(remove='disable')
+            self.controller.draft_priority = None
+            self._saved_pre, self._saved_post = 5, 5
+            self._currently_point = False
+            self.pre_input.value, self.post_input.value = 5, 5
+            self.pre_input.props(remove='disable')
+            self.post_input.props(remove='disable')
+            if hasattr(self.controller, 'day_time_selector'):
+                self.controller.day_time_selector.active_bucket = None
+                for icon in self.controller.day_time_selector.icons.values():
+                    icon.classes(add='text-gray-800 scale-100', remove='text-pink-400 scale-110')
+            d = self.controller.selected_date
             bucket = next(iter(self.controller.time_filter), None)
             if bucket in TIME_BUCKETS:
                 bs, be = TIME_BUCKETS[bucket]
@@ -1058,28 +1157,42 @@ class EventEditor:
             else:
                 start = self.controller.current_wt.window.begin
                 end = datetime.combine(start.date(), time_cls(23, 59))
+            self.controller.pill.enter_editor_mode(start, end)
+            if self.controller.priority_filter_widget:
+                self.controller.priority_filter_widget.select(None)
+                self.controller.priority_filter_widget.set_enabled(False)
+        else:
+            # ── edit existing ────────────────────────────────────────────
+            cat = event.__class__.__name__
+            self.category_select.value = cat
+            self.category_select.props(add='disable')
+            self._saved_pre  = int(event.pre_buffer  / timedelta(minutes=1))
+            self._saved_post = int(event.post_buffer / timedelta(minutes=1))
+            self.pre_input.value, self.post_input.value = self._saved_pre, self._saved_post
+            self._currently_point = issubclass(type(event), PointEvent)
+            self.controller.pill.enter_editor_mode(event.start, event.end)
+            self._on_category(None, initial=event)
+            # Restore priority without tripping on_change
+            if hasattr(event, 'priority') and event.priority:
+                self.controller.draft_priority = event.priority
+                w = self.controller.priority_filter_widget
+                if w:
+                    w.value = event.priority
+                    if hasattr(w, '_visual'):
+                        w._visual(event.priority)
 
-        self.controller.pill.enter_editor_mode(start, end)
         if self.controller.calendar and self.controller.calendar.outer:
             self.controller.calendar.outer.set_visibility(False)
         self.outer.set_visibility(True)
 
-        if self.controller.priority_filter_widget and event is None:
-            self.controller.priority_filter_widget.select(None)
-            self.controller.priority_filter_widget.set_enabled(False)
-
         self.controller.undo_btn.props('icon=close')
+        self.controller.undo_btn.props(remove="disable")
         self.controller.add_btn.props('icon=save')
-
-        if event is not None:
-            self.category_select.value = event.__class__.__name__
-            self._on_category(None, initial=event)
 
     def close(self):
         if not self.active:
             return
         self.active = False
-        self.editing_event = None
         self.controller.in_editor = False
         self.outer.set_visibility(False)
         if self.controller.calendar and self.controller.calendar.outer:
@@ -1093,7 +1206,11 @@ class EventEditor:
             self.controller.priority_filter_widget.select(self.controller.priority_filter)
 
         self.controller.undo_btn.props('icon=undo')
+        self.controller._update_undo_btn()
         self.controller.add_btn.props('icon=add')
+
+        self.edit_target = None
+        self.category_select.props(remove='disable')
 
     def _on_category(self, e, initial=None):
         self.fields_area.clear()
@@ -1147,8 +1264,6 @@ class EventEditor:
             self.controller.priority_filter_widget.set_enabled(supports_priority)
             if not supports_priority:
                 self.controller.priority_filter_widget.select(None)
-            elif initial is not None:
-                self.controller.priority_filter_widget.select(initial.priority)
 
         with self.fields_area:
             f_recurring = None
@@ -1198,15 +1313,43 @@ class EventEditor:
         elif origin is Literal:
             params = list(get_args(inner))
             with ui.row().classes('justify-center w-2/5'):
-                ui.select(
+                sel = ui.select(
                     params,
                     label=label,
                     value=default,
                     with_input=True,
                     on_change=lambda e, n=f.name: self.draft.__setitem__(n, e.value),
                 ).props('popup-content-class=text-center color=pink-400 options-dense').classes('w-full text-sm')
+            if f.name == 'recurring' and self.edit_target is not None:
+                sel.props(add='disable')
+
+    def _collect_kwargs(self, cls, title, start, end, is_point):
+        kwargs = {'title': title, 'start': start, 'end': end}
+        for f in fields(cls):
+            if f.name in PROP_SKIP:
+                if f.name in ('pre_buffer', 'post_buffer') and not is_point:
+                    kwargs[f.name] = self.draft.get(f.name, timedelta(minutes=5))
+                continue
+            if f.name == 'priority':
+                if issubclass(cls, FlexibleEvent):
+                    if self.controller.draft_priority is None:
+                        raise ValueError('Pick a priority')
+                    kwargs['priority'] = self.controller.draft_priority
+                continue
+            if f.name in self.draft and self.draft[f.name] not in (None, ''):
+                kwargs[f.name] = self.draft[f.name]
+            elif f.default is not MISSING:
+                kwargs[f.name] = f.default
+            elif f.default_factory is not MISSING:
+                kwargs[f.name] = f.default_factory()
+            else:
+                raise ValueError(f'{f.name} is required')
+        return kwargs
 
     def save(self):
+        if self.edit_target is not None:
+            self._save_edit(); return
+
         cat = self.category_select.value
         if not cat:
             ui.notify('Choose a category', color='negative'); return
@@ -1222,99 +1365,102 @@ class EventEditor:
         cls = CATEGORIES[cat]
         is_point = issubclass(cls, PointEvent)
 
-        kwargs = {'title': title, 'start': start, 'end': end}
-
-        for f in fields(cls):
-            if f.name in PROP_SKIP or f.name in ('uid', 'series_uid'):
-                if f.name in ('pre_buffer', 'post_buffer') and not is_point:
-                    kwargs[f.name] = self.draft.get(f.name, timedelta(minutes=5))
-                continue
-            if f.name == 'priority':
-                if issubclass(cls, FlexibleEvent):
-                    if self.controller.draft_priority is None:
-                        ui.notify('Pick a priority', color='negative'); return
-                    kwargs['priority'] = self.controller.draft_priority
-                continue
-            if f.name in self.draft and self.draft[f.name] not in (None, ''):
-                kwargs[f.name] = self.draft[f.name]
-            elif f.default is not MISSING:
-                kwargs[f.name] = f.default
-            elif f.default_factory is not MISSING:
-                kwargs[f.name] = f.default_factory()
-            else:
-                ui.notify(f'{f.name} is required', color='negative'); return
-
         try:
-            event = cls(**kwargs)
-        except Exception as ex:
-            ui.notify(f'Error: {ex}', color='negative'); return
+            event = cls(**self._collect_kwargs(cls, title, start, end, is_point))
+        except (ValueError, TypeError) as ex:
+            ui.notify(str(ex), color='negative'); return
 
-        if self.editing_event is not None:
-            if not self._save_edit(event):
-                return
+        if isinstance(event, FixedEvent):
+            if self.controller.fixed_tree.conflict_search(event) is not None:
+                ui.notify('Conflicts with a fixed event', color='negative'); return
+            self.controller.fixed_tree.insert(event)
+            for wt in self.controller.windows.values():
+                wt.sync(self.controller.fixed_tree)
         else:
-            if isinstance(event, FixedEvent):
-                if self.controller.fixed_tree.conflict_search(event) is not None:
-                    ui.notify('Conflicts with a fixed event', color='negative'); return
-                self.controller.fixed_tree.insert(event)
-                for wt in self.controller.windows.values():
-                    wt.sync(self.controller.fixed_tree)
-            else:
-                try:
-                    self.controller.current_wt.insert(event, self.controller.fixed_tree)
-                except ValueError as ex:
-                    ui.notify(str(ex), color='negative'); return
+            try:
+                self.controller.current_wt.insert(event, self.controller.fixed_tree)
+            except ValueError as ex:
+                ui.notify(str(ex), color='negative'); return
 
-            if getattr(event, 'recurring', 'Never') != 'Never':
-                self.controller.register_series(event)
+        if getattr(event, 'recurring', 'Never') != 'Never':
+            self.controller.register_series(event)
 
         self.close()
         self.controller._refresh()
+        self.controller.push_snapshot()
 
-    def _save_edit(self, new_event: Event) -> bool:
-        old = self.editing_event
-        old_was_recurring = getattr(old, 'recurring', 'Never') in RECURRENCE_UNIT
-        old_was_pending   = isinstance(old, FixedEvent) and old.uid in self.controller.pending_fixed
+    def _save_edit(self):
+        old = self.edit_target
+        cat = self.category_select.value
+        if not cat or cat != old.__class__.__name__:
+            ui.notify('Cannot change category when editing', color='negative'); return
+        title = (self.title_input.value or '').strip()
+        if not title:
+            ui.notify('Title is required', color='negative'); return
+        start = self.controller.pill._draft_start
+        end   = self.controller.pill._draft_end
+        if start is None or end is None or \
+           (cat in START_TIME_ONLY and start != end) or \
+           (cat not in START_TIME_ONLY and end <= start):
+            ui.notify('Set valid start and end times', color='negative'); return
 
-        # delete_event already records (series_uid, date) for recurring removals
-        self.controller.delete_event(old)
+        cls = CATEGORIES[cat]
+        is_point = issubclass(cls, PointEvent)
+        try:
+            new_event = cls(**self._collect_kwargs(cls, title, start, end, is_point))
+        except (ValueError, TypeError) as ex:
+            ui.notify(str(ex), color='negative'); return
 
-        def restore_old():
-            if old_was_recurring:
-                self.controller.deleted_reccurrences.discard((old.series_uid, old.start.date()))
-            if isinstance(old, FixedEvent):
-                if old_was_pending:
-                    self.controller.pending_fixed[old.uid] = old
-                elif self.controller.fixed_tree.conflict_search(old) is None:
-                    self.controller.fixed_tree.insert(old)
-                    for wt in self.controller.windows.values():
-                        wt.sync(self.controller.fixed_tree)
-            else:
-                try:
-                    self.controller.current_wt.insert(old, self.controller.fixed_tree)
-                except ValueError:
-                    pass
+        # keep identity so the DSA `edit` can locate the old record
+        new_event.uid = old.uid
+        new_event.series_uid = old.series_uid
 
         try:
-            if isinstance(new_event, FixedEvent):
-                if self.controller.fixed_tree.conflict_search(new_event) is not None:
-                    raise ValueError('Conflicts with a fixed event')
-                self.controller.fixed_tree.insert(new_event)
+            if isinstance(old, FixedEvent):
+                was_pending = old.uid in self.controller.pending_fixed
+                for iv in self.controller.fixed_tree.tree.overlap(
+                        new_event.true_start, new_event.true_end):
+                    if iv.data.uid != old.uid:
+                        ui.notify(f'Conflict with: {iv.data.title}', color='negative'); return
+                if was_pending:
+                    del self.controller.pending_fixed[old.uid]
+                    self.controller.fixed_tree.insert(new_event)
+                else:
+                    self.controller.fixed_tree.edit(old, new_event)
                 for wt in self.controller.windows.values():
                     wt.sync(self.controller.fixed_tree)
             else:
-                self.controller.current_wt.insert(new_event, self.controller.fixed_tree)
-        except ValueError as ex:
+                old_wt = next((wt for wt in self.controller.windows.values()
+                               if old.uid in wt.unscheduled or old.uid in wt.event_dict), None)
+                if old_wt is None:
+                    raise ValueError('Event not found in any window')
+                if new_event.start.date() == old_wt.window.begin.date():
+                    # same day → reuse WindowTree.edit (validate → delete → insert → cascade)
+                    for f in fields(type(old)):
+                        if f.name in ('uid', 'series_uid', 'seen'):
+                            continue
+                        setattr(old, f.name, getattr(new_event, f.name))
+                    old.seen.clear()
+                    old_wt.edit(old, self.controller.fixed_tree)
+                else:
+                    old_wt.delete(old)
+                    self.controller._ensure_window(new_event.start.date()) \
+                        .insert(new_event, self.controller.fixed_tree)
+        except (ValueError, KeyError) as ex:
+            # mutable state may have been touched → restore via snapshot
+            self._restore_snapshot(_decode_state(app.storage.user["current_snap"]))
+            self.close()
             ui.notify(str(ex), color='negative')
-            restore_old()
-            return False
+            self.controller._refresh()
+            return
 
-        # A one-off override for a recurring source: do NOT register as a series,
-        # or future days would materialise both old and new occurrences.
-        if not old_was_recurring and getattr(new_event, 'recurring', 'Never') != 'Never':
-            self.controller.register_series(new_event)
+        # edited occurrence is now instance-specific
+        if getattr(old, 'recurring', 'Never') in RECURRENCE_UNIT:
+            self.controller.deleted_reccurrences.add((old.series_uid, self._orig_date))
 
-        return True
+        self.close()
+        self.controller._refresh()
+        self.controller.push_snapshot()
 
 class PendingBar:
     def __init__(self, controller: SchedulerController):
@@ -1351,12 +1497,10 @@ class PendingBar:
 
     def _card(self, ev, color, kind):
         card = ui.element('div').classes(
-            'h-14 w-40 shrink-0 rounded-lg px-2 py-1 cursor-pointer '
-            'shadow-sm transition-transform duration-200 hover:scale-105 relative'
+            'h-14 w-40 shrink-0 rounded-lg px-2 py-1 '
+            'shadow-sm transition-transform duration-200 relative cursor-pointer hover:scale-105'
         ).style(f'background:{color};')
-        day = ev.start.date()
-        card.on('click', lambda ev=ev: None if self.controller.in_editor
-                             else self.controller.open_editor(ev))
+        card.on('click', lambda: self.controller.edit_event(ev))
         with card:
             ui.label(ev.title).classes('text-xs font-bold text-white truncate leading-tight pr-6')
             ui.label(f'{kind} \n on {ev.start:%Y/%m/%d}').classes('whitespace-pre-line text-[10px] text-white opacity-80 truncate pr-6')

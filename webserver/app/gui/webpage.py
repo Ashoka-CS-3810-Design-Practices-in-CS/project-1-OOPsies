@@ -3,7 +3,8 @@ from app.core.events import *
 from app.gui.components import *
 from nicegui import ui
 
-def main():
+@ui.page('/')
+def layout():
     ui.page_title("Scheduler")
     ui.add_css('''
     @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@500;700&display=swap');
@@ -68,4 +69,6 @@ def main():
                     controller.priority_filter_widget = priority_filter
                     Undo.render(controller)
 
-ui.run(main)
+    controller.init_snapshots()
+
+ui.run(storage_secret="december holigay")

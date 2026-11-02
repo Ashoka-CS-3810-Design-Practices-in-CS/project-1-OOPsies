@@ -1,4 +1,4 @@
-document.getElementById('nicegui-frame').src = `https://example.com/`
+document.getElementById('nicegui-frame').src = `https://doable.rupsha.page/`
 
 const btn = document.getElementById('import-btn')
 let prevDisabled = null 

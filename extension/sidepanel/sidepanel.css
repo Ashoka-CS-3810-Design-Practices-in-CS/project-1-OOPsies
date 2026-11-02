@@ -10,6 +10,7 @@ body, html, iframe {
 }
 
 #import-btn {
+    display: none;
     position: absolute;
     top: 12px;
     right: 12px;

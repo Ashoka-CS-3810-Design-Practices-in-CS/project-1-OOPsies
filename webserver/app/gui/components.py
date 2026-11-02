@@ -755,7 +755,8 @@ class WindowSelector:
             self._draft_start = self._draft_start.replace(hour=h, minute=m, second=0, microsecond=0)
             if self.start_only:
                 self._draft_end = self._draft_start
-            # else: leave _draft_end untouched; save() validates end > start
+            elif self._draft_end <= self._draft_start:
+                self._draft_end = self._draft_start + timedelta(hours=1)
         else:
             # Keep the end on the same day as the start (no next-day rollover)
             self._draft_end = self._draft_start.replace(hour=h, minute=m, second=0, microsecond=0)
